@@ -4,10 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Nossa Casa — Mercado</title>
-<link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#065f46">
-<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
-<link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
@@ -35,6 +31,3584 @@
     background-position: 0 6px;
     position: relative;
   }
+  .paper-sheet::before{
+    content:"";
+    position:absolute; top:0; bottom:0; left:30px; width:2px;
+    background: var(--paper-margin); opacity:.5;
+  }
+  .paper-pad{ padding-left:44px; }
+
+  .ticket{ position:relative; }
+  .ticket::before,.ticket::after{
+    content:"";position:absolute;left:0;right:0;height:10px;
+    background-image:
+      linear-gradient(135deg,var(--paper-bg) 25%,transparent 25%),
+      linear-gradient(-135deg,var(--paper-bg) 25%,transparent 25%);
+    background-size:14px 14px;background-repeat:repeat-x;
+  }
+  .ticket::before{top:-1px;background-position:top;}
+  .ticket::after{bottom:-1px;background-position:bottom;}
+
+  details > summary { list-style: none; }
+  details > summary::-webkit-details-marker { display:none; }
+
+  .tap-target { min-width:44px; min-height:44px; }
+</style>
+</head>
+<body class="bg-stone-200">
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react,env">
+const { useState, useEffect, useRef } = React;
+
+/* =========================================================
+   HELPERS GERAIS
+========================================================= */
+const uid = () =>
+  crypto.randomUUID ? crypto.randomUUID() : "id_" + Math.random().toString(36).slice(2) + Date.now();
+
+const by = (arr, id) => (arr || []).find((x) => x.id === id);
+
+const brl = (v) =>
+  v == null || isNaN(v) ? "—" : v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+const numDe = (txt) => {
+  if (txt == null || txt === "") return null;
+  const v = parseFloat(String(txt).replace(",", "."));
+  return isNaN(v) ? null : v;
+};
+
+/* Entrada inteligente de preço: sem vírgula/ponto -> últimos 2 dígitos viram centavos
+   (até 2 dígitos = reais inteiros). Com vírgula/ponto -> valor literal. */
+const parsePrecoInteligente = (txt) => {
+  if (txt == null) return null;
+  const t = String(txt).trim();
+  if (t === "") return null;
+  if (t.includes(",") || t.includes(".")) {
+    const v = parseFloat(t.replace(",", "."));
+    return isNaN(v) ? null : v;
+  }
+  const digitos = t.replace(/\D/g, "");
+  if (!digitos) return null;
+  if (digitos.length <= 2) return parseInt(digitos, 10);
+  const centavos = digitos.slice(-2);
+  const reais = digitos.slice(0, -2);
+  return parseInt(reais, 10) + parseInt(centavos, 10) / 100;
+};
+const formatarValorCampo = (v) => (v == null ? "" : v.toFixed(2).replace(".", ","));
+/* Bug 22.5.2: filtra o que é digitado nos campos de preço pra só aceitar dígito/vírgula/ponto */
+const sanitizarEntradaPreco = (txt) => (txt || "").replace(/[^0-9,.]/g, "");
+
+function diasDesde(dataStr) {
+  const d = Math.floor((Date.now() - new Date(dataStr).getTime()) / 86400000);
+  if (d <= 0) return "hoje";
+  if (d === 1) return "há 1 dia";
+  return `há ${d} dias`;
+}
+function dataCurta(dataStr) {
+  return new Date(dataStr).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
+}
+function mesAno(dataStr) {
+  const d = new Date(dataStr);
+  const s = d.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function dataParaArquivo() {
+  return new Date().toISOString().slice(0, 10);
+}
+function normalizar(txt) {
+  return (txt || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+}
+function tamanhoDisplay(variante) {
+  if (!variante) return "";
+  if (variante.tamanho && variante.tamanho.trim()) return variante.tamanho;
+  if (variante.tamanho_quantidade && variante.tamanho_unidade) return `${variante.tamanho_quantidade}${variante.tamanho_unidade}`;
+  return "";
+}
+
+function resizeImage(file, maxWidth = 480, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxWidth / img.width);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+/* =========================================================
+   REGRAS DE NEGÓCIO
+========================================================= */
+/* Seção 24: quando o item teve promoção, o histórico/indicador/tendência/comparação usam o preço
+   NORMAL (sem desconto), não o valor efetivamente pago — evita que uma promoção pontual vire
+   "o novo normal" e faça o próximo preço cheio parecer caro sem ter ficado. */
+function precoParaHistorico(item) {
+  return item.preco_normal ?? item.preco_pago;
+}
+function calcHistorico(sessoes, varianteId, unidade, mercadoId = null) {
+  const regs = [];
+  for (const s of sessoes) {
+    if (s.status !== "fechada") continue;
+    if (mercadoId && s.mercado_id !== mercadoId) continue;
+    for (const it of s.itens) {
+      if (it.produto_variante_id === varianteId && it.preco_pago != null && it.unidade === unidade) {
+        regs.push({ preco: precoParaHistorico(it), data: s.data_hora });
+      }
+    }
+  }
+  if (!regs.length) return null;
+  const precos = regs.map((r) => r.preco);
+  const min = Math.min(...precos);
+  const max = Math.max(...precos);
+  const media = precos.reduce((a, b) => a + b, 0) / precos.length;
+  return {
+    min, max, media, n: regs.length,
+    dataMin: regs.find((r) => r.preco === min).data,
+    dataMax: regs.find((r) => r.preco === max).data,
+  };
+}
+function historicoQualquerUnidade(sessoes, varianteId) {
+  for (const u of ["un", "kg", "l"]) {
+    const h = calcHistorico(sessoes, varianteId, u);
+    if (h) return { ...h, unidade: u };
+  }
+  return null;
+}
+function historicoCronologico(sessoes, varianteId, unidade) {
+  const regs = [];
+  for (const s of sessoes) {
+    if (s.status !== "fechada") continue;
+    for (const it of s.itens) {
+      if (it.produto_variante_id === varianteId && it.preco_pago != null && it.unidade === unidade) {
+        regs.push({ preco: precoParaHistorico(it), data: s.data_hora, mercado_id: s.mercado_id });
+      }
+    }
+  }
+  return regs.sort((a, b) => new Date(a.data) - new Date(b.data));
+}
+function calcMediaRecente(sessoes, varianteId, unidade, mercadoId = null, meses = 3) {
+  const limite = new Date();
+  limite.setMonth(limite.getMonth() - meses);
+  const precos = [];
+  for (const s of sessoes) {
+    if (s.status !== "fechada") continue;
+    if (new Date(s.data_hora) < limite) continue;
+    if (mercadoId && s.mercado_id !== mercadoId) continue;
+    for (const it of s.itens) {
+      if (it.produto_variante_id === varianteId && it.preco_pago != null && it.unidade === unidade) {
+        precos.push(precoParaHistorico(it));
+      }
+    }
+  }
+  if (!precos.length) return null;
+  return precos.reduce((a, b) => a + b, 0) / precos.length;
+}
+function calcUltimaCompra(sessoes, varianteId, mercadoId) {
+  let melhor = null;
+  for (const s of sessoes) {
+    if (s.status !== "fechada" || s.mercado_id !== mercadoId) continue;
+    for (const it of s.itens) {
+      if (it.produto_variante_id === varianteId && it.preco_pago != null) {
+        if (!melhor || new Date(s.data_hora) > new Date(melhor.data)) {
+          melhor = { preco: it.preco_pago, data: s.data_hora };
+        }
+      }
+    }
+  }
+  return melhor;
+}
+function calcIndicador(precoPago, media) {
+  if (media == null) return null;
+  if (precoPago <= media * 0.95) return "bom";
+  if (precoPago <= media * 1.05) return "normal";
+  return "caro";
+}
+function calcItensFrequentes(sessoes, catalogo, n = 8) {
+  const cont = {};
+  for (const s of sessoes) {
+    if (s.status !== "fechada") continue;
+    for (const it of s.itens) cont[it.produto_variante_id] = (cont[it.produto_variante_id] || 0) + 1;
+  }
+  return Object.entries(cont)
+    .sort((a, b) => {
+      const va = by(catalogo.variantes, a[0]), vb = by(catalogo.variantes, b[0]);
+      const fa = va?.favorita ? 1 : 0, fb = vb?.favorita ? 1 : 0;
+      if (fa !== fb) return fb - fa;
+      return b[1] - a[1];
+    })
+    .slice(0, n).map(([id]) => id);
+}
+function subtotalPorCategoria(itens, catalogo) {
+  const porCat = {};
+  for (const it of itens) {
+    if (it.preco_pago == null) continue;
+    const v = by(catalogo.variantes, it.produto_variante_id);
+    const p = v && by(catalogo.produtos, v.produto_id);
+    const cat = p && by(catalogo.categorias, p.categoria_id);
+    const nome = cat?.nome || "Outros";
+    porCat[nome] = (porCat[nome] || 0) + (it.subtotal || 0);
+  }
+  return porCat;
+}
+/* Seção 22.4b: instantâneo do gasto por categoria no momento do fechamento — fica salvo junto da sessão */
+function snapshotCategorias(itens, catalogo) {
+  const porCat = {};
+  for (const it of itens) {
+    if (!it.comprado || it.preco_pago == null) continue;
+    const v = by(catalogo.variantes, it.produto_variante_id);
+    const p = v && by(catalogo.produtos, v.produto_id);
+    const cat = p && by(catalogo.categorias, p.categoria_id);
+    const id = cat?.id || "sem_categoria";
+    if (!porCat[id]) porCat[id] = { categoria_id: id, nome: cat?.nome || "Outros", icone: cat?.icone || "🛒", valor: 0 };
+    porCat[id].valor += it.subtotal || 0;
+  }
+  return Object.values(porCat);
+}
+function totalPrevisto(itens, catalogo, sessoes, mercadoId) {
+  let total = 0;
+  for (const it of itens) {
+    if (it.preco_pago != null) { total += it.subtotal || 0; continue; }
+    const mediaRec = calcMediaRecente(sessoes, it.produto_variante_id, it.unidade, mercadoId);
+    const mediaGer = calcHistorico(sessoes, it.produto_variante_id, it.unidade)?.media;
+    const ref = mediaRec ?? mediaGer ?? 0;
+    total += ref * it.quantidade;
+  }
+  return total;
+}
+function itensBaratosAgora(catalogo, sessoes, precoIaCache) {
+  const avisos = [];
+  for (const v of catalogo.variantes) {
+    const est = ultimaEstimativa(precoIaCache, v.id);
+    if (!est) continue;
+    const hist = historicoQualquerUnidade(sessoes, v.id);
+    if (!hist) continue;
+    if (est.preco_medio_estimado < hist.media * 0.9) {
+      const p = by(catalogo.produtos, v.produto_id);
+      avisos.push({ nome: p?.nome || "item", economia: hist.media - est.preco_medio_estimado });
+    }
+  }
+  return avisos.sort((a, b) => b.economia - a.economia).slice(0, 3);
+}
+function upsertBy(arr, incoming) {
+  const map = new Map((arr || []).map((x) => [x.id, x]));
+  for (const item of incoming || []) map.set(item.id, { ...map.get(item.id), ...item });
+  return Array.from(map.values());
+}
+function categoriasOrdenadas(catalogo, mercado) {
+  const ordem = mercado?.ordem_categorias;
+  if (!ordem || !ordem.length) return catalogo.categorias;
+  const emOrdem = ordem.map((id) => by(catalogo.categorias, id)).filter(Boolean);
+  const idsEmOrdem = new Set(emOrdem.map((c) => c.id));
+  const resto = catalogo.categorias.filter((c) => !idsEmOrdem.has(c.id));
+  return [...emOrdem, ...resto];
+}
+function calcTendencia(sessoes, varianteId, unidade) {
+  const cron = historicoCronologico(sessoes, varianteId, unidade);
+  if (cron.length < 2) return null;
+  const meio = Math.floor(cron.length / 2);
+  const antigos = cron.slice(0, meio || 1);
+  const recentes = cron.slice(meio || 1);
+  if (!antigos.length || !recentes.length) return null;
+  const mediaAntiga = antigos.reduce((a, r) => a + r.preco, 0) / antigos.length;
+  const mediaRecente = recentes.reduce((a, r) => a + r.preco, 0) / recentes.length;
+  const pct = mediaAntiga ? ((mediaRecente - mediaAntiga) / mediaAntiga) * 100 : 0;
+  if (pct > 5) return { direcao: "subindo", pct };
+  if (pct < -5) return { direcao: "caindo", pct };
+  return { direcao: "estavel", pct };
+}
+
+/* =========================================================
+   COMPARAÇÃO DE PREÇO POR UNIDADE ENTRE TAMANHOS (seção 22.10, parte 1)
+   Normaliza preço pago pra uma unidade-base (kg/l/un) e compara variantes
+   que dividem mesmo produto + mesma marca (inclusive "genérico").
+========================================================= */
+function precoPorUnidadeBase(item, variante) {
+  if (item.preco_pago == null) return null;
+  const preco = precoParaHistorico(item);
+  /* Comprado direto por peso/volume (ex: balcão, granel) — já é o preço por unidade-base */
+  if (item.unidade === "kg" || item.unidade === "l") {
+    return { valor: preco, unidadeBase: item.unidade };
+  }
+  /* Comprado como pacote fechado — normaliza dividindo pelo tamanho do pacote */
+  if (item.unidade === "un" && variante?.tamanho_quantidade && variante?.tamanho_unidade) {
+    return { valor: preco / variante.tamanho_quantidade, unidadeBase: variante.tamanho_unidade };
+  }
+  return null;
+}
+function historicoNormalizado(sessoes, varianteId, variante) {
+  const porUnidade = {};
+  for (const s of sessoes) {
+    if (s.status !== "fechada") continue;
+    for (const it of s.itens) {
+      if (it.produto_variante_id !== varianteId) continue;
+      const norm = precoPorUnidadeBase(it, variante);
+      if (norm) (porUnidade[norm.unidadeBase] = porUnidade[norm.unidadeBase] || []).push(norm.valor);
+    }
+  }
+  const entradas = Object.entries(porUnidade);
+  if (!entradas.length) return null;
+  const [unidadeBase, valores] = entradas.sort((a, b) => b[1].length - a[1].length)[0];
+  return { media: valores.reduce((a, b) => a + b, 0) / valores.length, unidadeBase, n: valores.length };
+}
+function compararVariantes(catalogo, sessoes, varianteId) {
+  const variante = by(catalogo.variantes, varianteId);
+  if (!variante) return null;
+  const atual = historicoNormalizado(sessoes, varianteId, variante);
+  if (!atual) return null;
+  const irmas = catalogo.variantes.filter((v) => v.produto_id === variante.produto_id && v.marca_id === variante.marca_id);
+  const comparaveis = irmas
+    .map((v) => { const norm = historicoNormalizado(sessoes, v.id, v); return norm && norm.unidadeBase === atual.unidadeBase ? { variante: v, normalizado: norm } : null; })
+    .filter(Boolean)
+    .sort((a, b) => a.normalizado.media - b.normalizado.media);
+  return comparaveis.length > 1 ? comparaveis : null;
+}
+/* Quando o TAMANHO específico ainda não tem histórico (ex: comprou Nescau 950g pela primeira vez),
+   deriva uma referência a partir do preço normalizado dos "irmãos" (mesmo produto+marca, outro tamanho) —
+   sem isso, o indicador ▼/▲ simplesmente não tinha o que comparar. */
+function precoReferenciaEntreTamanhos(catalogo, sessoes, varianteId) {
+  const variante = by(catalogo.variantes, varianteId);
+  if (!variante || !variante.tamanho_quantidade || !variante.tamanho_unidade) return null;
+  const irmas = catalogo.variantes.filter((v) => v.produto_id === variante.produto_id && v.marca_id === variante.marca_id && v.id !== varianteId);
+  const normalizados = irmas
+    .map((v) => historicoNormalizado(sessoes, v.id, v))
+    .filter((n) => n && n.unidadeBase === variante.tamanho_unidade);
+  if (!normalizados.length) return null;
+  const mediaNormalizada = normalizados.reduce((a, n) => a + n.media, 0) / normalizados.length;
+  return mediaNormalizada * variante.tamanho_quantidade;
+}
+/* Todas as variantes de mesmo produto+marca (incluindo a própria) — usado pro gráfico comparativo entre tamanhos */
+function todasVariantesIrmas(catalogo, varianteId) {
+  const variante = by(catalogo.variantes, varianteId);
+  if (!variante) return [];
+  return catalogo.variantes.filter((v) => v.produto_id === variante.produto_id && v.marca_id === variante.marca_id);
+}
+/* Histórico cronológico já normalizado por unidade-base (R$/kg, R$/l ou R$/un) — pra plotar tamanhos diferentes
+   no mesmo gráfico, correndo juntos no tempo, em vez do preço bruto (que não é comparável entre tamanhos). */
+function historicoNormalizadoCronologico(sessoes, varianteId, variante) {
+  const regs = [];
+  for (const s of sessoes) {
+    if (s.status !== "fechada") continue;
+    for (const it of s.itens) {
+      if (it.produto_variante_id !== varianteId) continue;
+      const norm = precoPorUnidadeBase(it, variante);
+      if (norm) regs.push({ preco: norm.valor, unidadeBase: norm.unidadeBase, data: s.data_hora, mercado_id: s.mercado_id });
+    }
+  }
+  return regs.sort((a, b) => new Date(a.data) - new Date(b.data));
+}
+/* Sinaliza quando um valor de referência veio de estimativa por IA, ou de outro tamanho, em vez de histórico direto (seção 22.10) */
+function referenciaComFonte(mediaRecente, mediaGeral, referenciaCruzada, estimativaIA) {
+  if (mediaRecente != null) return { valor: mediaRecente, fonte: "real" };
+  if (mediaGeral != null) return { valor: mediaGeral, fonte: "real" };
+  if (referenciaCruzada != null) return { valor: referenciaCruzada, fonte: "cruzada" };
+  if (estimativaIA != null) return { valor: estimativaIA, fonte: "ia" };
+  return null;
+}
+
+/* =========================================================
+   PROMOÇÕES (seção 24): "leve N pague M" e "desconto % com quantidade mínima".
+   O preço NORMAL (sem desconto) é o que fica registrado pro histórico (via precoParaHistorico) —
+   essas funções só calculam o preço EFETIVO, pra total/gasto real, sem tocar no preço normal.
+========================================================= */
+function calcularPrecoComPromocao(precoNormal, quantidade, promocao) {
+  if (!promocao || precoNormal == null) return { precoEfetivo: precoNormal, ativada: true, faltam: 0 };
+  if (promocao.tipo === "desconto_percentual") {
+    const minima = promocao.quantidade_minima || 1;
+    if (quantidade < minima) return { precoEfetivo: precoNormal, ativada: false, faltam: minima - quantidade };
+    const precoEfetivo = precoNormal * (1 - (promocao.percentual || 0) / 100);
+    return { precoEfetivo, ativada: true, faltam: 0 };
+  }
+  if (promocao.tipo === "leve_pague") {
+    const leve = promocao.leve || 1, pague = promocao.pague || 1;
+    if (quantidade < leve) return { precoEfetivo: precoNormal, ativada: false, faltam: leve - quantidade };
+    const unidadesPagas = Math.floor(quantidade / leve) * pague + (quantidade % leve);
+    const precoEfetivo = (precoNormal * unidadesPagas) / quantidade;
+    return { precoEfetivo, ativada: true, faltam: 0 };
+  }
+  return { precoEfetivo: precoNormal, ativada: true, faltam: 0 };
+}
+function descontoEfetivoPercentual(precoNormal, precoEfetivo) {
+  if (!precoNormal) return 0;
+  return ((precoNormal - precoEfetivo) / precoNormal) * 100;
+}
+function textoPromocao(promocao) {
+  if (!promocao) return "";
+  if (promocao.tipo === "desconto_percentual") return `${promocao.percentual}% off (a partir de ${promocao.quantidade_minima} un.)`;
+  if (promocao.tipo === "leve_pague") return `Leve ${promocao.leve}, pague ${promocao.pague}`;
+  return "";
+}
+/* Lista cronológica só das compras que tiveram promoção — usada na tela de histórico da variante */
+function historicoPromocoes(sessoes, varianteId) {
+  const regs = [];
+  for (const s of sessoes) {
+    if (s.status !== "fechada") continue;
+    for (const it of s.itens) {
+      if (it.produto_variante_id !== varianteId || !it.promocao || it.preco_normal == null || it.preco_pago == null) continue;
+      regs.push({
+        data: s.data_hora, mercado_id: s.mercado_id, promocao: it.promocao,
+        precoNormal: it.preco_normal, precoEfetivo: it.preco_pago,
+        economia: (it.preco_normal - it.preco_pago) * it.quantidade,
+        descontoPercentual: descontoEfetivoPercentual(it.preco_normal, it.preco_pago),
+      });
+    }
+  }
+  return regs.sort((a, b) => new Date(a.data) - new Date(b.data));
+}
+/* Compara o desconto de UMA promoção com a média das OUTRAS promoções do mesmo item — "melhor/pior/igual" */
+function indicadorPromocao(descontoAtual, todosDescontos, indiceAtual) {
+  const outros = todosDescontos.filter((_, i) => i !== indiceAtual);
+  if (!outros.length) return null;
+  const media = outros.reduce((a, d) => a + d, 0) / outros.length;
+  const diff = descontoAtual - media;
+  if (diff > 3) return "melhor";
+  if (diff < -3) return "pior";
+  return "igual";
+}
+
+/* =========================================================
+   PREÇO POR IA — seção 22.10 "preparar o terreno":
+   cache passa de 1 valor por variante pra um HISTÓRICO (array) por variante.
+   Cada "Atualizar" ACRESCENTA um ponto novo, não sobrescreve mais.
+========================================================= */
+function migrarPrecoIaCache(raw) {
+  const migrado = {};
+  for (const [id, val] of Object.entries(raw || {})) {
+    if (Array.isArray(val)) migrado[id] = val;
+    else if (val && typeof val === "object") migrado[id] = [val]; // formato antigo (1 objeto) vira historico de 1 ponto
+  }
+  return migrado;
+}
+function ultimaEstimativa(precoIaCache, varianteId) {
+  const arr = precoIaCache[varianteId];
+  return arr && arr.length ? arr[arr.length - 1] : null;
+}
+function adicionarEstimativa(precoIaCache, varianteId, estimativa) {
+  const arr = precoIaCache[varianteId] || [];
+  return { ...precoIaCache, [varianteId]: [...arr, { ...estimativa, consultado_em: new Date().toISOString() }] };
+}
+
+/* =========================================================
+   EXPORTAÇÃO
+========================================================= */
+async function baixarOuCompartilharJSON(obj, baseNome, compartilhar) {
+  const filename = `${baseNome}-${dataParaArquivo()}.json`;
+  const json = JSON.stringify(obj, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  if (compartilhar && navigator.share) {
+    try {
+      const file = new File([blob], filename, { type: "application/json" });
+      if (!navigator.canShare || navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: filename });
+        return;
+      }
+    } catch (e) {}
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportarExcel(sessoes, catalogo) {
+  const linhas = [];
+  for (const s of sessoes) {
+    if (s.status !== "fechada") continue;
+    const m = by(catalogo.mercados, s.mercado_id);
+    for (const it of s.itens) {
+      if (!it.comprado) continue;
+      const v = by(catalogo.variantes, it.produto_variante_id);
+      const p = v && by(catalogo.produtos, v.produto_id);
+      const marca = v?.marca_id && by(catalogo.marcas, v.marca_id);
+      const cat = p && by(catalogo.categorias, p.categoria_id);
+      linhas.push({
+        Data: new Date(s.data_hora).toLocaleDateString("pt-BR"),
+        Mercado: m?.nome || "", Categoria: cat?.nome || "", Produto: p?.nome || "", Marca: marca?.nome || "",
+        Quantidade: it.quantidade, Unidade: it.unidade, "Preço pago (R$)": it.preco_pago,
+      });
+    }
+  }
+  const porMes = {}, porMercado = {};
+  for (const s of sessoes) {
+    if (s.status !== "fechada") continue;
+    const valor = s.valor_nota_fiscal ?? s.itens.reduce((a, it) => a + (it.subtotal || 0), 0);
+    porMes[mesAno(s.data_hora)] = (porMes[mesAno(s.data_hora)] || 0) + valor;
+    const nomeM = by(catalogo.mercados, s.mercado_id)?.nome || s.mercado_id;
+    porMercado[nomeM] = (porMercado[nomeM] || 0) + valor;
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhas), "Compras");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Object.entries(porMes).map(([k, v]) => ({ Mês: k, "Total (R$)": v }))), "Resumo por mes");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Object.entries(porMercado).map(([k, v]) => ({ Mercado: k, "Total (R$)": v }))), "Resumo por mercado");
+  XLSX.writeFile(wb, `historico-nossa-casa-${dataParaArquivo()}.xlsx`);
+}
+
+/* =========================================================
+   BUSCA DE PREÇO POR IA
+========================================================= */
+async function buscarPrecoIA(nome, marcaNome, tamanho, apiKey) {
+  if (!apiKey) throw new Error("SEM_CHAVE");
+  const descricao = `${nome}${marcaNome ? ", marca " + marcaNome : ""}${tamanho ? ", " + tamanho : ""}`;
+  const prompt = `Pesquise na internet e estime o preço médio de mercado atual no Brasil para o produto: ${descricao}. Responda APENAS com um JSON válido, sem nenhum texto antes ou depois e sem markdown, exatamente neste formato: {"preco_min_estimado": numero, "preco_medio_estimado": numero, "preco_max_estimado": numero}`;
+  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json", "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6", max_tokens: 1000,
+      messages: [{ role: "user", content: prompt }],
+      tools: [{ type: "web_search_20250305", name: "web_search" }],
+    }),
+  });
+  if (!resp.ok) {
+    const t = await resp.text();
+    throw new Error("Erro da API (" + resp.status + "): " + t.slice(0, 150));
+  }
+  const data = await resp.json();
+  const texto = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  const match = texto.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("Não foi possível interpretar a resposta.");
+  return JSON.parse(match[0]);
+}
+
+/* =========================================================
+   CAMPOS DA TABELA NUTRICIONAL
+========================================================= */
+const CAMPOS_NUTRICIONAIS = [
+  { key: "porcao", label: "Porção", texto: true, placeholder: "ex: 30g" },
+  { key: "porcoes_por_embalagem", label: "Porções/embalagem" },
+  { key: "valor_energetico_kcal", label: "Valor energético (kcal)" },
+  { key: "carboidratos_g", label: "Carboidratos (g)" },
+  { key: "acucares_totais_g", label: "Açúcares totais (g)" },
+  { key: "acucares_adicionados_g", label: "Açúcares adicionados (g)" },
+  { key: "proteinas_g", label: "Proteínas (g)" },
+  { key: "gorduras_totais_g", label: "Gorduras totais (g)" },
+  { key: "gorduras_saturadas_g", label: "Gorduras saturadas (g)" },
+  { key: "gorduras_trans_g", label: "Gorduras trans (g)" },
+  { key: "fibra_alimentar_g", label: "Fibra alimentar (g)" },
+  { key: "sodio_mg", label: "Sódio (mg)" },
+];
+
+const CORES_CATEGORIA = ["#2E6B4E","#C97A2E","#2E5F8A","#8A3B5C","#5C6B2E","#B23A3A","#6B4E9E","#4E9E8A","#9E4E6B","#4E6B9E","#9E8A4E","#6B9E4E","#8A4E9E","#4E9E4E","#9E6B4E"];
+function corCategoria(catId, todasCategorias) {
+  const idx = todasCategorias.findIndex((c) => c.id === catId);
+  return CORES_CATEGORIA[idx >= 0 ? idx % CORES_CATEGORIA.length : 0];
+}
+
+/* =========================================================
+   DADOS INICIAIS
+========================================================= */
+const SEED_CATALOGO = {
+  "mercados": [
+    {
+      "id": "mercado_rio_sul",
+      "nome": "Rio Sul",
+      "razao_social": "",
+      "cnpj": "",
+      "telefone": "",
+      "cor": "#2E6B4E",
+      "endereco": "",
+      "ativo": true,
+      "ordem_categorias": []
+    },
+    {
+      "id": "mercado_tere_frutas",
+      "nome": "Tere Frutas",
+      "razao_social": "",
+      "cnpj": "",
+      "telefone": "",
+      "cor": "#C97A2E",
+      "endereco": "",
+      "ativo": true,
+      "ordem_categorias": []
+    }
+  ],
+  "categorias": [
+    {
+      "id": "cat_graos",
+      "nome": "Grãos",
+      "icone": "🌾"
+    },
+    {
+      "id": "cat_oleos",
+      "nome": "Óleos",
+      "icone": "🛢️"
+    },
+    {
+      "id": "cat_hortifruti",
+      "nome": "Hortifruti",
+      "icone": "🍅"
+    },
+    {
+      "id": "cat_limpeza",
+      "nome": "Limpeza",
+      "icone": "🧼"
+    },
+    {
+      "id": "cat_bebidas",
+      "nome": "Bebidas",
+      "icone": "🥤"
+    },
+    {
+      "id": "cat_higiene",
+      "nome": "Higiene",
+      "icone": "🧻"
+    },
+    {
+      "id": "cat_laticinios",
+      "nome": "Laticínios",
+      "icone": "🥛"
+    },
+    {
+      "id": "cat_padaria",
+      "nome": "Padaria",
+      "icone": "🍞"
+    },
+    {
+      "id": "cat_mercearia",
+      "nome": "Mercearia",
+      "icone": "🛒"
+    },
+    {
+      "id": "cat_massas",
+      "nome": "Massas",
+      "icone": "🍝"
+    },
+    {
+      "id": "cat_temperos",
+      "nome": "Temperos e Condimentos",
+      "icone": "🧂"
+    },
+    {
+      "id": "cat_carnes",
+      "nome": "Carnes e Peixes",
+      "icone": "🥩"
+    },
+    {
+      "id": "cat_ovos",
+      "nome": "Ovos",
+      "icone": "🥚"
+    },
+    {
+      "id": "cat_congelados",
+      "nome": "Congelados",
+      "icone": "🧊"
+    },
+    {
+      "id": "cat_enlatados",
+      "nome": "Enlatados e Conservas",
+      "icone": "🥫"
+    }
+  ],
+  "produtos": [
+    {
+      "id": "prod_arroz",
+      "nome": "Arroz Branco Tipo 1",
+      "descricao": "",
+      "categoria_id": "cat_graos",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_feijao",
+      "nome": "Feijão Carioca",
+      "descricao": "",
+      "categoria_id": "cat_graos",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_oleo",
+      "nome": "Óleo de Soja",
+      "descricao": "",
+      "categoria_id": "cat_oleos",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_acucar",
+      "nome": "Açúcar Refinado",
+      "descricao": "",
+      "categoria_id": "cat_graos",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_cafe",
+      "nome": "Café",
+      "descricao": "",
+      "categoria_id": "cat_mercearia",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_sabao",
+      "nome": "Sabão em Pó",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_detergente",
+      "nome": "Detergente",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_papel",
+      "nome": "Papel Higiênico",
+      "descricao": "",
+      "categoria_id": "cat_higiene",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_leite",
+      "nome": "Leite Integral",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_tomate",
+      "nome": "Tomate",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_cebola",
+      "nome": "Cebola",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_banana",
+      "nome": "Banana",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_pao",
+      "nome": "Pão Francês",
+      "descricao": "",
+      "categoria_id": "cat_padaria",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_refrigerante",
+      "nome": "Refrigerante",
+      "descricao": "",
+      "categoria_id": "cat_bebidas",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_macarrao",
+      "nome": "Macarrão",
+      "descricao": "",
+      "categoria_id": "cat_massas",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_biscoito_maizena",
+      "nome": "Biscoito Maizena",
+      "descricao": "",
+      "categoria_id": "cat_padaria",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_biscoito_creamcracker",
+      "nome": "Biscoito Cream Cracker",
+      "descricao": "",
+      "categoria_id": "cat_padaria",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_paodeforma",
+      "nome": "Pão de Forma",
+      "descricao": "",
+      "categoria_id": "cat_padaria",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_rosquinha",
+      "nome": "Rosquinha",
+      "descricao": "",
+      "categoria_id": "cat_padaria",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_farinhalactea",
+      "nome": "Farinha Láctea",
+      "descricao": "",
+      "categoria_id": "cat_mercearia",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_achocolatado",
+      "nome": "Achocolatado em Pó",
+      "descricao": "",
+      "categoria_id": "cat_mercearia",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_mel",
+      "nome": "Mel",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_azeite",
+      "nome": "Azeite de Oliva",
+      "descricao": "",
+      "categoria_id": "cat_oleos",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_vinagre",
+      "nome": "Vinagre",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_pimenta",
+      "nome": "Pimenta do Reino em Pó",
+      "descricao": "Pura",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_ketchup",
+      "nome": "Ketchup",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_farinhatrigo",
+      "nome": "Farinha de Trigo",
+      "descricao": "",
+      "categoria_id": "cat_mercearia",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_sal",
+      "nome": "Sal Refinado",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_cerveja",
+      "nome": "Cerveja",
+      "descricao": "",
+      "categoria_id": "cat_bebidas",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_uvaverde",
+      "nome": "Uva Verde",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_uvapreta",
+      "nome": "Uva Preta",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_batatainglesa",
+      "nome": "Batata Inglesa",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_abobrinha",
+      "nome": "Abobrinha",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_beterraba",
+      "nome": "Beterraba",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_mangapalmer",
+      "nome": "Manga Palmer",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_mangatommy",
+      "nome": "Manga Tommy",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_ponkan",
+      "nome": "Ponkan (tangerina)",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_inhame",
+      "nome": "Inhame",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_inhamecara",
+      "nome": "Inhame Cará",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_alho",
+      "nome": "Alho",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_pera",
+      "nome": "Pera",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_queijomussarelafatiado",
+      "nome": "Queijo Mussarela Fatiado",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_queijomussarelapedaco",
+      "nome": "Queijo Mussarela em Pedaço",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_queijopratofatiado",
+      "nome": "Queijo Prato Fatiado",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_queijominaspedaco",
+      "nome": "Queijo Minas em Pedaço",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_danoninho",
+      "nome": "Danoninho",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_ovodegalinha",
+      "nome": "Ovo de Galinha",
+      "descricao": "",
+      "categoria_id": "cat_ovos",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_peixecavalinha",
+      "nome": "Peixe Cavalinha",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_peixetilapia",
+      "nome": "Peixe Tilápia",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_peixemerluza",
+      "nome": "Peixe Merluza",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_carneacem",
+      "nome": "Carne Bovina Acém",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_carnemusculo",
+      "nome": "Carne Bovina Músculo",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_carnealcatra",
+      "nome": "Carne Bovina Alcatra",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_carnepatinho",
+      "nome": "Carne Bovina Patinho",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_carreseuino",
+      "nome": "Carne Suína Carré",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_capalombo",
+      "nome": "Carne Suína Capa de Lombo",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_salsicha",
+      "nome": "Salsicha",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_linguica",
+      "nome": "Linguiça",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_feijao_preto",
+      "nome": "Feijão Preto",
+      "descricao": "",
+      "categoria_id": "cat_graos",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_lentilha",
+      "nome": "Lentilha",
+      "descricao": "",
+      "categoria_id": "cat_graos",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_grao_de_bico",
+      "nome": "Grão de Bico",
+      "descricao": "",
+      "categoria_id": "cat_graos",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_milho_de_pipoca",
+      "nome": "Milho de Pipoca",
+      "descricao": "",
+      "categoria_id": "cat_graos",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_aveia_em_flocos",
+      "nome": "Aveia em Flocos",
+      "descricao": "",
+      "categoria_id": "cat_graos",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_fuba",
+      "nome": "Fubá",
+      "descricao": "",
+      "categoria_id": "cat_graos",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_farinha_de_mandioca",
+      "nome": "Farinha de Mandioca",
+      "descricao": "",
+      "categoria_id": "cat_graos",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_quinoa",
+      "nome": "Quinoa",
+      "descricao": "",
+      "categoria_id": "cat_graos",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_macarrao_instantaneo_miojo",
+      "nome": "Macarrão Instantâneo (Miojo)",
+      "descricao": "",
+      "categoria_id": "cat_massas",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_molho_de_tomate_pronto",
+      "nome": "Molho de Tomate Pronto",
+      "descricao": "",
+      "categoria_id": "cat_massas",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_massa_para_lasanha",
+      "nome": "Massa para Lasanha",
+      "descricao": "",
+      "categoria_id": "cat_massas",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_oleo_de_girassol",
+      "nome": "Óleo de Girassol",
+      "descricao": "",
+      "categoria_id": "cat_oleos",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_oleo_de_canola",
+      "nome": "Óleo de Canola",
+      "descricao": "",
+      "categoria_id": "cat_oleos",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_maionese",
+      "nome": "Maionese",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_mostarda",
+      "nome": "Mostarda",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_molho_shoyu",
+      "nome": "Molho Shoyu",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_caldo_em_tablete",
+      "nome": "Caldo em Tablete",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_oregano",
+      "nome": "Orégano",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_colorau",
+      "nome": "Colorau",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_extrato_de_tomate",
+      "nome": "Extrato de Tomate",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_molho_ingles",
+      "nome": "Molho Inglês",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_molho_de_pimenta",
+      "nome": "Molho de Pimenta",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_adocante",
+      "nome": "Adoçante",
+      "descricao": "",
+      "categoria_id": "cat_temperos",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_cenoura",
+      "nome": "Cenoura",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_alface",
+      "nome": "Alface",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_couve",
+      "nome": "Couve",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_espinafre",
+      "nome": "Espinafre",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_chuchu",
+      "nome": "Chuchu",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_pepino",
+      "nome": "Pepino",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_pimentao",
+      "nome": "Pimentão",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_repolho",
+      "nome": "Repolho",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_laranja",
+      "nome": "Laranja",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_limao",
+      "nome": "Limão",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_maca",
+      "nome": "Maçã",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_mamao",
+      "nome": "Mamão",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_melancia",
+      "nome": "Melancia",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_abacaxi",
+      "nome": "Abacaxi",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_morango",
+      "nome": "Morango",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_coco",
+      "nome": "Coco",
+      "descricao": "",
+      "categoria_id": "cat_hortifruti",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_frango_inteiro",
+      "nome": "Frango Inteiro",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_peito_de_frango",
+      "nome": "Peito de Frango",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_coxa_e_sobrecoxa_de_frango",
+      "nome": "Coxa e Sobrecoxa de Frango",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_bacon",
+      "nome": "Bacon",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_presunto_fatiado",
+      "nome": "Presunto Fatiado",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_carne_moida",
+      "nome": "Carne Moída",
+      "descricao": "",
+      "categoria_id": "cat_carnes",
+      "unidade_padrao": "kg"
+    },
+    {
+      "id": "prod_manteiga",
+      "nome": "Manteiga",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_margarina",
+      "nome": "Margarina",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_requeijao",
+      "nome": "Requeijão",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_creme_de_leite",
+      "nome": "Creme de Leite",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_leite_condensado",
+      "nome": "Leite Condensado",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_iogurte_natural",
+      "nome": "Iogurte Natural",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_leite_em_po",
+      "nome": "Leite em Pó",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_queijo_parmesao_ralado",
+      "nome": "Queijo Parmesão Ralado",
+      "descricao": "",
+      "categoria_id": "cat_laticinios",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_bolo_pronto",
+      "nome": "Bolo Pronto",
+      "descricao": "",
+      "categoria_id": "cat_padaria",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_torradas",
+      "nome": "Torradas",
+      "descricao": "",
+      "categoria_id": "cat_padaria",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_bisnaguinha",
+      "nome": "Bisnaguinha",
+      "descricao": "",
+      "categoria_id": "cat_padaria",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_fermento_em_po_quimico",
+      "nome": "Fermento em Pó Químico",
+      "descricao": "",
+      "categoria_id": "cat_mercearia",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_fermento_biologico",
+      "nome": "Fermento Biológico",
+      "descricao": "",
+      "categoria_id": "cat_mercearia",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_gelatina_em_po",
+      "nome": "Gelatina em Pó",
+      "descricao": "",
+      "categoria_id": "cat_mercearia",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_pudim_em_po",
+      "nome": "Pudim em Pó",
+      "descricao": "",
+      "categoria_id": "cat_mercearia",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_cha_em_saquinho",
+      "nome": "Chá em Saquinho",
+      "descricao": "",
+      "categoria_id": "cat_mercearia",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_cereal_matinal",
+      "nome": "Cereal Matinal",
+      "descricao": "",
+      "categoria_id": "cat_mercearia",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_suco_em_po",
+      "nome": "Suco em Pó",
+      "descricao": "",
+      "categoria_id": "cat_bebidas",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_suco_de_caixinha",
+      "nome": "Suco de Caixinha",
+      "descricao": "",
+      "categoria_id": "cat_bebidas",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_agua_mineral",
+      "nome": "Água Mineral",
+      "descricao": "",
+      "categoria_id": "cat_bebidas",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_refrigerante_guarana",
+      "nome": "Refrigerante Guaraná",
+      "descricao": "",
+      "categoria_id": "cat_bebidas",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_agua_de_coco",
+      "nome": "Água de Coco",
+      "descricao": "",
+      "categoria_id": "cat_bebidas",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_vinho_tinto",
+      "nome": "Vinho Tinto",
+      "descricao": "",
+      "categoria_id": "cat_bebidas",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_agua_sanitaria",
+      "nome": "Água Sanitária",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_amaciante_de_roupas",
+      "nome": "Amaciante de Roupas",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_desinfetante",
+      "nome": "Desinfetante",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_sabao_em_barra",
+      "nome": "Sabão em Barra",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_esponja_de_aco_la_de_aco",
+      "nome": "Esponja de Aço (Lã de Aço)",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_esponja_de_cozinha",
+      "nome": "Esponja de Cozinha",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_saco_de_lixo",
+      "nome": "Saco de Lixo",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_papel_toalha",
+      "nome": "Papel Toalha",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_alcool_70",
+      "nome": "Álcool 70%",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_limpador_multiuso",
+      "nome": "Limpador Multiuso",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_alvejante",
+      "nome": "Alvejante",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "l"
+    },
+    {
+      "id": "prod_detergente_limpol",
+      "nome": "Detergente Limpol",
+      "descricao": "",
+      "categoria_id": "cat_limpeza",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_sabonete",
+      "nome": "Sabonete",
+      "descricao": "",
+      "categoria_id": "cat_higiene",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_shampoo",
+      "nome": "Shampoo",
+      "descricao": "",
+      "categoria_id": "cat_higiene",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_condicionador",
+      "nome": "Condicionador",
+      "descricao": "",
+      "categoria_id": "cat_higiene",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_creme_dental",
+      "nome": "Creme Dental",
+      "descricao": "",
+      "categoria_id": "cat_higiene",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_escova_de_dente",
+      "nome": "Escova de Dente",
+      "descricao": "",
+      "categoria_id": "cat_higiene",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_absorvente",
+      "nome": "Absorvente",
+      "descricao": "",
+      "categoria_id": "cat_higiene",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_desodorante",
+      "nome": "Desodorante",
+      "descricao": "",
+      "categoria_id": "cat_higiene",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_fralda_descartavel",
+      "nome": "Fralda Descartável",
+      "descricao": "",
+      "categoria_id": "cat_higiene",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_cotonete",
+      "nome": "Cotonete",
+      "descricao": "",
+      "categoria_id": "cat_higiene",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_fio_dental",
+      "nome": "Fio Dental",
+      "descricao": "",
+      "categoria_id": "cat_higiene",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_hamburguer_congelado",
+      "nome": "Hambúrguer Congelado",
+      "descricao": "",
+      "categoria_id": "cat_congelados",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_batata_frita_congelada",
+      "nome": "Batata Frita Congelada",
+      "descricao": "",
+      "categoria_id": "cat_congelados",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_pizza_congelada",
+      "nome": "Pizza Congelada",
+      "descricao": "",
+      "categoria_id": "cat_congelados",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_acai_congelado",
+      "nome": "Açaí Congelado",
+      "descricao": "",
+      "categoria_id": "cat_congelados",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_nuggets_congelado",
+      "nome": "Nuggets Congelado",
+      "descricao": "",
+      "categoria_id": "cat_congelados",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_polpa_de_fruta_congelada",
+      "nome": "Polpa de Fruta Congelada",
+      "descricao": "",
+      "categoria_id": "cat_congelados",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_sorvete",
+      "nome": "Sorvete",
+      "descricao": "",
+      "categoria_id": "cat_congelados",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_milho_em_conserva",
+      "nome": "Milho em Conserva",
+      "descricao": "",
+      "categoria_id": "cat_enlatados",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_ervilha_em_conserva",
+      "nome": "Ervilha em Conserva",
+      "descricao": "",
+      "categoria_id": "cat_enlatados",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_atum_em_lata",
+      "nome": "Atum em Lata",
+      "descricao": "",
+      "categoria_id": "cat_enlatados",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_sardinha_em_lata",
+      "nome": "Sardinha em Lata",
+      "descricao": "",
+      "categoria_id": "cat_enlatados",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_palmito_em_conserva",
+      "nome": "Palmito em Conserva",
+      "descricao": "",
+      "categoria_id": "cat_enlatados",
+      "unidade_padrao": "un"
+    },
+    {
+      "id": "prod_azeitona",
+      "nome": "Azeitona",
+      "descricao": "",
+      "categoria_id": "cat_enlatados",
+      "unidade_padrao": "un"
+    }
+  ],
+  "marcas": [
+    {
+      "id": "marca_tiojoao",
+      "nome": "Tio João"
+    },
+    {
+      "id": "marca_camil",
+      "nome": "Camil"
+    },
+    {
+      "id": "marca_soya",
+      "nome": "Soya"
+    },
+    {
+      "id": "marca_liza",
+      "nome": "Liza"
+    },
+    {
+      "id": "marca_uniao",
+      "nome": "União"
+    },
+    {
+      "id": "marca_pilao",
+      "nome": "Pilão"
+    },
+    {
+      "id": "marca_omo",
+      "nome": "Omo"
+    },
+    {
+      "id": "marca_ype",
+      "nome": "Ypê"
+    },
+    {
+      "id": "marca_neve",
+      "nome": "Neve"
+    },
+    {
+      "id": "marca_itambe",
+      "nome": "Itambé"
+    },
+    {
+      "id": "marca_cocacola",
+      "nome": "Coca-Cola"
+    },
+    {
+      "id": "marca_piracanjuba",
+      "nome": "Piracanjuba"
+    },
+    {
+      "id": "marca_ninho",
+      "nome": "Ninho"
+    },
+    {
+      "id": "marca_quissama",
+      "nome": "Quissamã"
+    },
+    {
+      "id": "marca_aldente",
+      "nome": "Aldente"
+    },
+    {
+      "id": "marca_favorito",
+      "nome": "Favorito"
+    },
+    {
+      "id": "marca_melitta",
+      "nome": "Melitta"
+    },
+    {
+      "id": "marca_terefrutas",
+      "nome": "Tere Frutas"
+    },
+    {
+      "id": "marca_gallo",
+      "nome": "Gallo"
+    },
+    {
+      "id": "marca_castelo",
+      "nome": "Castelo"
+    },
+    {
+      "id": "marca_predilecta",
+      "nome": "Predilecta"
+    },
+    {
+      "id": "marca_adria",
+      "nome": "Adria"
+    },
+    {
+      "id": "marca_eisenbahn",
+      "nome": "Eisenbahn"
+    },
+    {
+      "id": "marca_cisne",
+      "nome": "Cisne"
+    },
+    {
+      "id": "marca_danone",
+      "nome": "Danone"
+    },
+    {
+      "id": "marca_rancheiro",
+      "nome": "Rancheiro"
+    },
+    {
+      "id": "marca_sabor",
+      "nome": "Sabor"
+    },
+    {
+      "id": "marca_toddy",
+      "nome": "Toddy"
+    },
+    {
+      "id": "marca_nescau",
+      "nome": "Nescau"
+    },
+    {
+      "id": "marca_nestle",
+      "nome": "Nestlé"
+    },
+    {
+      "id": "marca_kicaldo",
+      "nome": "Kicaldo"
+    },
+    {
+      "id": "marca_yoki",
+      "nome": "Yoki"
+    },
+    {
+      "id": "marca_quaker",
+      "nome": "Quaker"
+    },
+    {
+      "id": "marca_nissin",
+      "nome": "Nissin"
+    },
+    {
+      "id": "marca_fugini",
+      "nome": "Fugini"
+    },
+    {
+      "id": "marca_quero",
+      "nome": "Quero"
+    },
+    {
+      "id": "marca_renata",
+      "nome": "Renata"
+    },
+    {
+      "id": "marca_hellmann_s",
+      "nome": "Hellmann's"
+    },
+    {
+      "id": "marca_hemmer",
+      "nome": "Hemmer"
+    },
+    {
+      "id": "marca_sakura",
+      "nome": "Sakura"
+    },
+    {
+      "id": "marca_knorr",
+      "nome": "Knorr"
+    },
+    {
+      "id": "marca_maggi",
+      "nome": "Maggi"
+    },
+    {
+      "id": "marca_elefante",
+      "nome": "Elefante"
+    },
+    {
+      "id": "marca_lea_perrins",
+      "nome": "Lea & Perrins"
+    },
+    {
+      "id": "marca_zero_cal",
+      "nome": "Zero-Cal"
+    },
+    {
+      "id": "marca_sadia",
+      "nome": "Sadia"
+    },
+    {
+      "id": "marca_perdigao",
+      "nome": "Perdigão"
+    },
+    {
+      "id": "marca_seara",
+      "nome": "Seara"
+    },
+    {
+      "id": "marca_aviacao",
+      "nome": "Aviação"
+    },
+    {
+      "id": "marca_qualy",
+      "nome": "Qualy"
+    },
+    {
+      "id": "marca_catupiry",
+      "nome": "Catupiry"
+    },
+    {
+      "id": "marca_moca",
+      "nome": "Moça"
+    },
+    {
+      "id": "marca_ana_maria",
+      "nome": "Ana Maria"
+    },
+    {
+      "id": "marca_bauducco",
+      "nome": "Bauducco"
+    },
+    {
+      "id": "marca_pullman",
+      "nome": "Pullman"
+    },
+    {
+      "id": "marca_wickbold",
+      "nome": "Wickbold"
+    },
+    {
+      "id": "marca_royal",
+      "nome": "Royal"
+    },
+    {
+      "id": "marca_fleischmann",
+      "nome": "Fleischmann"
+    },
+    {
+      "id": "marca_leao",
+      "nome": "Leão"
+    },
+    {
+      "id": "marca_sucrilhos",
+      "nome": "Sucrilhos"
+    },
+    {
+      "id": "marca_tang",
+      "nome": "Tang"
+    },
+    {
+      "id": "marca_del_valle",
+      "nome": "Del Valle"
+    },
+    {
+      "id": "marca_guarana_antarctica",
+      "nome": "Guaraná Antarctica"
+    },
+    {
+      "id": "marca_qboa",
+      "nome": "Qboa"
+    },
+    {
+      "id": "marca_candida",
+      "nome": "Cândida"
+    },
+    {
+      "id": "marca_comfort",
+      "nome": "Comfort"
+    },
+    {
+      "id": "marca_downy",
+      "nome": "Downy"
+    },
+    {
+      "id": "marca_pinho_sol",
+      "nome": "Pinho Sol"
+    },
+    {
+      "id": "marca_bombril",
+      "nome": "Bombril"
+    },
+    {
+      "id": "marca_scotch_brite",
+      "nome": "Scotch-Brite"
+    },
+    {
+      "id": "marca_snob",
+      "nome": "Snob"
+    },
+    {
+      "id": "marca_veja",
+      "nome": "Veja"
+    },
+    {
+      "id": "marca_vanish",
+      "nome": "Vanish"
+    },
+    {
+      "id": "marca_limpol",
+      "nome": "Limpol"
+    },
+    {
+      "id": "marca_dove",
+      "nome": "Dove"
+    },
+    {
+      "id": "marca_lux",
+      "nome": "Lux"
+    },
+    {
+      "id": "marca_seda",
+      "nome": "Seda"
+    },
+    {
+      "id": "marca_pantene",
+      "nome": "Pantene"
+    },
+    {
+      "id": "marca_colgate",
+      "nome": "Colgate"
+    },
+    {
+      "id": "marca_sorriso",
+      "nome": "Sorriso"
+    },
+    {
+      "id": "marca_oral_b",
+      "nome": "Oral-B"
+    },
+    {
+      "id": "marca_always",
+      "nome": "Always"
+    },
+    {
+      "id": "marca_sempre_livre",
+      "nome": "Sempre Livre"
+    },
+    {
+      "id": "marca_rexona",
+      "nome": "Rexona"
+    },
+    {
+      "id": "marca_nivea",
+      "nome": "Nivea"
+    },
+    {
+      "id": "marca_pampers",
+      "nome": "Pampers"
+    },
+    {
+      "id": "marca_huggies",
+      "nome": "Huggies"
+    },
+    {
+      "id": "marca_johnson_s",
+      "nome": "Johnson's"
+    },
+    {
+      "id": "marca_mccain",
+      "nome": "McCain"
+    },
+    {
+      "id": "marca_kibon",
+      "nome": "Kibon"
+    },
+    {
+      "id": "marca_bonduelle",
+      "nome": "Bonduelle"
+    },
+    {
+      "id": "marca_gomes_da_costa",
+      "nome": "Gomes da Costa"
+    },
+    {
+      "id": "marca_caravelas",
+      "nome": "Caravelas"
+    }
+  ],
+  "variantes": [
+    {
+      "id": "var_arroz_tiojoao_5kg",
+      "produto_id": "prod_arroz",
+      "marca_id": "marca_tiojoao",
+      "tamanho": "5kg",
+      "tamanho_quantidade": 5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_arroz_camil_5kg",
+      "produto_id": "prod_arroz",
+      "marca_id": "marca_camil",
+      "tamanho": "5kg",
+      "tamanho_quantidade": 5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_feijao_camil_1kg",
+      "produto_id": "prod_feijao",
+      "marca_id": "marca_camil",
+      "tamanho": "1kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_oleo_soya_900ml",
+      "produto_id": "prod_oleo",
+      "marca_id": "marca_soya",
+      "tamanho": "900ml",
+      "tamanho_quantidade": 0.9,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_oleo_liza_900ml",
+      "produto_id": "prod_oleo",
+      "marca_id": "marca_liza",
+      "tamanho": "900ml",
+      "tamanho_quantidade": 0.9,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_acucar_uniao_1kg",
+      "produto_id": "prod_acucar",
+      "marca_id": "marca_uniao",
+      "tamanho": "1kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_cafe_pilao_500g",
+      "produto_id": "prod_cafe",
+      "marca_id": "marca_pilao",
+      "tamanho": "500g",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_sabao_omo_1kg",
+      "produto_id": "prod_sabao",
+      "marca_id": "marca_omo",
+      "tamanho": "1kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_detergente_ype_500ml",
+      "produto_id": "prod_detergente",
+      "marca_id": "marca_ype",
+      "tamanho": "500ml",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_papel_neve_12un",
+      "produto_id": "prod_papel",
+      "marca_id": "marca_neve",
+      "tamanho": "pacote 12un",
+      "tamanho_quantidade": 12,
+      "tamanho_unidade": "un",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_leite_itambe_1l",
+      "produto_id": "prod_leite",
+      "marca_id": "marca_itambe",
+      "tamanho": "1l",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_tomate_kg",
+      "produto_id": "prod_tomate",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_cebola_kg",
+      "produto_id": "prod_cebola",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_banana_kg",
+      "produto_id": "prod_banana",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_pao_kg",
+      "produto_id": "prod_pao",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_refrigerante_cocacola_2l",
+      "produto_id": "prod_refrigerante",
+      "marca_id": "marca_cocacola",
+      "tamanho": "2l",
+      "tamanho_quantidade": 2,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_leite_piracanjuba_1l",
+      "produto_id": "prod_leite",
+      "marca_id": "marca_piracanjuba",
+      "tamanho": "1l",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_leite_ninho_1l",
+      "produto_id": "prod_leite",
+      "marca_id": "marca_ninho",
+      "tamanho": "1l",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_leite_quissama_1l",
+      "produto_id": "prod_leite",
+      "marca_id": "marca_quissama",
+      "tamanho": "1l",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_macarrao_aldente_espaguete_1kg",
+      "produto_id": "prod_macarrao",
+      "marca_id": "marca_aldente",
+      "tamanho": "1kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "Espaguete",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_macarrao_aldente_talharim_500g",
+      "produto_id": "prod_macarrao",
+      "marca_id": "marca_aldente",
+      "tamanho": "500g",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "Talharim",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_cafe_favorito_500g",
+      "produto_id": "prod_cafe",
+      "marca_id": "marca_favorito",
+      "tamanho": "500g",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_cafe_favorito_250g",
+      "produto_id": "prod_cafe",
+      "marca_id": "marca_favorito",
+      "tamanho": "250g",
+      "tamanho_quantidade": 0.25,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_cafe_melitta_250g",
+      "produto_id": "prod_cafe",
+      "marca_id": "marca_melitta",
+      "tamanho": "250g",
+      "tamanho_quantidade": 0.25,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_cafe_melitta_500g",
+      "produto_id": "prod_cafe",
+      "marca_id": "marca_melitta",
+      "tamanho": "500g",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_biscoito_maizena_200g",
+      "produto_id": "prod_biscoito_maizena",
+      "marca_id": null,
+      "tamanho": "200g (aprox. — confirme a marca que você compra)",
+      "tamanho_quantidade": 0.2,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_biscoito_creamcracker_200g",
+      "produto_id": "prod_biscoito_creamcracker",
+      "marca_id": null,
+      "tamanho": "200g (aprox. — confirme a marca que você compra)",
+      "tamanho_quantidade": 0.2,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_paodeforma_500g",
+      "produto_id": "prod_paodeforma",
+      "marca_id": null,
+      "tamanho": "500g (aprox. — confirme a marca)",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_rosquinha_rancheiro_300g",
+      "produto_id": "prod_rosquinha",
+      "marca_id": "marca_rancheiro",
+      "tamanho": "300g",
+      "tamanho_quantidade": 0.3,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "Coco (confirme o sabor)",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_farinhalactea_nestle_360g",
+      "produto_id": "prod_farinhalactea",
+      "marca_id": "marca_nestle",
+      "tamanho": "360g",
+      "tamanho_quantidade": 0.36,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_arroz_terefrutas_5kg",
+      "produto_id": "prod_arroz",
+      "marca_id": "marca_terefrutas",
+      "tamanho": "5kg",
+      "tamanho_quantidade": 5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_achocolatado_toddy_750g",
+      "produto_id": "prod_achocolatado",
+      "marca_id": "marca_toddy",
+      "tamanho": "750g",
+      "tamanho_quantidade": 0.75,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_achocolatado_nescau_350g",
+      "produto_id": "prod_achocolatado",
+      "marca_id": "marca_nescau",
+      "tamanho": "350g",
+      "tamanho_quantidade": 0.35,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_mel_terefrutas_500g",
+      "produto_id": "prod_mel",
+      "marca_id": "marca_terefrutas",
+      "tamanho": "500g",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_azeite_gallo_classico_500ml",
+      "produto_id": "prod_azeite",
+      "marca_id": "marca_gallo",
+      "tamanho": "500ml",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "Clássico",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_vinagre_castelo_alcool_750ml",
+      "produto_id": "prod_vinagre",
+      "marca_id": "marca_castelo",
+      "tamanho": "750ml",
+      "tamanho_quantidade": 0.75,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "de Álcool",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_pimenta_sabor_30g",
+      "produto_id": "prod_pimenta",
+      "marca_id": "marca_sabor",
+      "tamanho": "30g",
+      "tamanho_quantidade": 0.03,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_uvaverde_kg",
+      "produto_id": "prod_uvaverde",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_uvapreta_kg",
+      "produto_id": "prod_uvapreta",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_ketchup_predilecta_400g",
+      "produto_id": "prod_ketchup",
+      "marca_id": "marca_predilecta",
+      "tamanho": "400g",
+      "tamanho_quantidade": 0.4,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_ovodegalinha_20un",
+      "produto_id": "prod_ovodegalinha",
+      "marca_id": null,
+      "tamanho": "bandeja 20un",
+      "tamanho_quantidade": 20,
+      "tamanho_unidade": "un",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_ovodegalinha_30un",
+      "produto_id": "prod_ovodegalinha",
+      "marca_id": null,
+      "tamanho": "bandeja 30un",
+      "tamanho_quantidade": 30,
+      "tamanho_unidade": "un",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_acucar_caravelas_1kg",
+      "produto_id": "prod_acucar",
+      "marca_id": "marca_caravelas",
+      "tamanho": "1kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_farinhatrigo_adria_1kg",
+      "produto_id": "prod_farinhatrigo",
+      "marca_id": "marca_adria",
+      "tamanho": "1kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_batatainglesa_kg",
+      "produto_id": "prod_batatainglesa",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_abobrinha_kg",
+      "produto_id": "prod_abobrinha",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_beterraba_kg",
+      "produto_id": "prod_beterraba",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_cerveja_eisenbahn_473ml",
+      "produto_id": "prod_cerveja",
+      "marca_id": "marca_eisenbahn",
+      "tamanho": "lata 473ml",
+      "tamanho_quantidade": 0.473,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_mangapalmer_kg",
+      "produto_id": "prod_mangapalmer",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_mangatommy_kg",
+      "produto_id": "prod_mangatommy",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_ponkan_kg",
+      "produto_id": "prod_ponkan",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_inhame_kg",
+      "produto_id": "prod_inhame",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_inhamecara_kg",
+      "produto_id": "prod_inhamecara",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_sal_cisne_1kg",
+      "produto_id": "prod_sal",
+      "marca_id": "marca_cisne",
+      "tamanho": "1kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_alho_kg",
+      "produto_id": "prod_alho",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_pera_kg",
+      "produto_id": "prod_pera",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_queijomussarelafatiado_150g",
+      "produto_id": "prod_queijomussarelafatiado",
+      "marca_id": null,
+      "tamanho": "150g (aprox. — confirme a marca)",
+      "tamanho_quantidade": 0.15,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_queijomussarelapedaco_kg",
+      "produto_id": "prod_queijomussarelapedaco",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_queijopratofatiado_150g",
+      "produto_id": "prod_queijopratofatiado",
+      "marca_id": null,
+      "tamanho": "150g (aprox. — confirme a marca)",
+      "tamanho_quantidade": 0.15,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_queijominaspedaco_kg",
+      "produto_id": "prod_queijominaspedaco",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_danoninho_danone_600g",
+      "produto_id": "prod_danoninho",
+      "marca_id": "marca_danone",
+      "tamanho": "pack 6x100g",
+      "tamanho_quantidade": 0.6,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "Pack com 6 unidades de 100g",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_peixecavalinha_kg",
+      "produto_id": "prod_peixecavalinha",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_peixetilapia_kg",
+      "produto_id": "prod_peixetilapia",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_peixemerluza_kg",
+      "produto_id": "prod_peixemerluza",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_carneacem_kg",
+      "produto_id": "prod_carneacem",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_carnemusculo_kg",
+      "produto_id": "prod_carnemusculo",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_carnealcatra_kg",
+      "produto_id": "prod_carnealcatra",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_carnepatinho_kg",
+      "produto_id": "prod_carnepatinho",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_carreseuino_kg",
+      "produto_id": "prod_carreseuino",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_capalombo_kg",
+      "produto_id": "prod_capalombo",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_salsicha_500g",
+      "produto_id": "prod_salsicha",
+      "marca_id": null,
+      "tamanho": "500g (aprox. — confirme a marca/tamanho)",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_linguica_kg",
+      "produto_id": "prod_linguica",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_feijao_preto_camil_1kg",
+      "produto_id": "prod_feijao_preto",
+      "marca_id": "marca_camil",
+      "tamanho": "1kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_feijao_preto_kicaldo_1kg",
+      "produto_id": "prod_feijao_preto",
+      "marca_id": "marca_kicaldo",
+      "tamanho": "1kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_lentilha_generico_500g",
+      "produto_id": "prod_lentilha",
+      "marca_id": null,
+      "tamanho": "500g",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_grao_de_bico_generico_500g",
+      "produto_id": "prod_grao_de_bico",
+      "marca_id": null,
+      "tamanho": "500g",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_milho_de_pipoca_yoki_500g",
+      "produto_id": "prod_milho_de_pipoca",
+      "marca_id": "marca_yoki",
+      "tamanho": "500g",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_aveia_em_flocos_quaker_170g",
+      "produto_id": "prod_aveia_em_flocos",
+      "marca_id": "marca_quaker",
+      "tamanho": "170g",
+      "tamanho_quantidade": 0.17,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_fuba_yoki_1kg",
+      "produto_id": "prod_fuba",
+      "marca_id": "marca_yoki",
+      "tamanho": "1kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_farinha_de_mandioca_generico_1kg",
+      "produto_id": "prod_farinha_de_mandioca",
+      "marca_id": null,
+      "tamanho": "1kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_quinoa_generico_250g",
+      "produto_id": "prod_quinoa",
+      "marca_id": null,
+      "tamanho": "250g",
+      "tamanho_quantidade": 0.25,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_macarrao_instantaneo_miojo_nissin_85g",
+      "produto_id": "prod_macarrao_instantaneo_miojo",
+      "marca_id": "marca_nissin",
+      "tamanho": "85g",
+      "tamanho_quantidade": 0.085,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_molho_de_tomate_pronto_fugini_340g",
+      "produto_id": "prod_molho_de_tomate_pronto",
+      "marca_id": "marca_fugini",
+      "tamanho": "340g",
+      "tamanho_quantidade": 0.34,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_molho_de_tomate_pronto_quero_340g",
+      "produto_id": "prod_molho_de_tomate_pronto",
+      "marca_id": "marca_quero",
+      "tamanho": "340g",
+      "tamanho_quantidade": 0.34,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_massa_para_lasanha_renata_500g",
+      "produto_id": "prod_massa_para_lasanha",
+      "marca_id": "marca_renata",
+      "tamanho": "500g",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_oleo_de_girassol_generico_900ml",
+      "produto_id": "prod_oleo_de_girassol",
+      "marca_id": null,
+      "tamanho": "900ml",
+      "tamanho_quantidade": 0.9,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_oleo_de_canola_generico_900ml",
+      "produto_id": "prod_oleo_de_canola",
+      "marca_id": null,
+      "tamanho": "900ml",
+      "tamanho_quantidade": 0.9,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_maionese_hellmann_s_500g",
+      "produto_id": "prod_maionese",
+      "marca_id": "marca_hellmann_s",
+      "tamanho": "500g",
+      "tamanho_quantidade": 0.5,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_mostarda_hemmer_200g",
+      "produto_id": "prod_mostarda",
+      "marca_id": "marca_hemmer",
+      "tamanho": "200g",
+      "tamanho_quantidade": 0.2,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_molho_shoyu_sakura_150ml",
+      "produto_id": "prod_molho_shoyu",
+      "marca_id": "marca_sakura",
+      "tamanho": "150ml",
+      "tamanho_quantidade": 0.15,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_caldo_em_tablete_knorr_57g_6_tabletes",
+      "produto_id": "prod_caldo_em_tablete",
+      "marca_id": "marca_knorr",
+      "tamanho": "57g (6 tabletes)",
+      "tamanho_quantidade": 0.057,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_caldo_em_tablete_maggi_57g_6_tabletes",
+      "produto_id": "prod_caldo_em_tablete",
+      "marca_id": "marca_maggi",
+      "tamanho": "57g (6 tabletes)",
+      "tamanho_quantidade": 0.057,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_oregano_generico_10g",
+      "produto_id": "prod_oregano",
+      "marca_id": null,
+      "tamanho": "10g",
+      "tamanho_quantidade": 0.01,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_colorau_generico_100g",
+      "produto_id": "prod_colorau",
+      "marca_id": null,
+      "tamanho": "100g",
+      "tamanho_quantidade": 0.1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_extrato_de_tomate_elefante_340g",
+      "produto_id": "prod_extrato_de_tomate",
+      "marca_id": "marca_elefante",
+      "tamanho": "340g",
+      "tamanho_quantidade": 0.34,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_molho_ingles_lea_perrins_150ml",
+      "produto_id": "prod_molho_ingles",
+      "marca_id": "marca_lea_perrins",
+      "tamanho": "150ml",
+      "tamanho_quantidade": 0.15,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_molho_de_pimenta_generico_150ml",
+      "produto_id": "prod_molho_de_pimenta",
+      "marca_id": null,
+      "tamanho": "150ml",
+      "tamanho_quantidade": 0.15,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_adocante_zero_cal_100ml",
+      "produto_id": "prod_adocante",
+      "marca_id": "marca_zero_cal",
+      "tamanho": "100ml",
+      "tamanho_quantidade": 0.1,
+      "tamanho_unidade": "l",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_cenoura_generico_kg",
+      "produto_id": "prod_cenoura",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_alface_generico_unidade",
+      "produto_id": "prod_alface",
+      "marca_id": null,
+      "tamanho": "unidade",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "un",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_couve_generico_maco",
+      "produto_id": "prod_couve",
+      "marca_id": null,
+      "tamanho": "maço",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "un",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_espinafre_generico_maco",
+      "produto_id": "prod_espinafre",
+      "marca_id": null,
+      "tamanho": "maço",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "un",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_chuchu_generico_kg",
+      "produto_id": "prod_chuchu",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_pepino_generico_kg",
+      "produto_id": "prod_pepino",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_pimentao_generico_kg",
+      "produto_id": "prod_pimentao",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_repolho_generico_kg",
+      "produto_id": "prod_repolho",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_laranja_generico_kg",
+      "produto_id": "prod_laranja",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_limao_generico_kg",
+      "produto_id": "prod_limao",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_maca_generico_kg",
+      "produto_id": "prod_maca",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_mamao_generico_kg",
+      "produto_id": "prod_mamao",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_melancia_generico_kg",
+      "produto_id": "prod_melancia",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_abacaxi_generico_unidade",
+      "produto_id": "prod_abacaxi",
+      "marca_id": null,
+      "tamanho": "unidade",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "un",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_morango_generico_bandeja_250g",
+      "produto_id": "prod_morango",
+      "marca_id": null,
+      "tamanho": "bandeja 250g",
+      "tamanho_quantidade": 0.25,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_coco_generico_unidade",
+      "produto_id": "prod_coco",
+      "marca_id": null,
+      "tamanho": "unidade",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "un",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_frango_inteiro_generico_kg",
+      "produto_id": "prod_frango_inteiro",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+    },
+    {
+      "id": "var_peito_de_frango_generico_kg",
+      "produto_id": "prod_peito_de_frango",
+      "marca_id": null,
+      "tamanho": "kg",
+      "tamanho_quantidade": 1,
+      "tamanho_unidade": "kg",
+      "codigo_barras": "",
+      "descricao_variante": "",
+      "foto": null,
+      "tabela_nutricional": null
+   }
   .paper-sheet::before{
     content:"";
     position:absolute; top:0; bottom:0; left:30px; width:2px;

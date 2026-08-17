@@ -334,6 +334,85 @@ function calcTendencia(sessoes, varianteId, unidade) {
 }
 
 /* =========================================================
+   NFC-e: leitura do XML, casamento com a lista, checagem de duplicidade (seção 26)
+   Só nível 1 (arquivo XML) por enquanto — QR Code e OCR ficam pra depois.
+========================================================= */
+/* getElementsByTagName pode falhar em elemento com namespace padrão (xmlns sem prefixo) —
+   esse helper tenta por nome direto e cai pra busca por localName se não achar nada. */
+function elementosPorTag(raiz, tag) {
+  let els = Array.from(raiz.getElementsByTagName(tag));
+  if (!els.length) els = Array.from(raiz.getElementsByTagName("*")).filter((el) => el.localName === tag);
+  return els;
+}
+function textoDe(raiz, tag) {
+  const el = elementosPorTag(raiz, tag)[0];
+  return el ? el.textContent.trim() : "";
+}
+function parsearNfeXml(textoXml) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(textoXml, "text/xml");
+  if (doc.querySelector("parsererror")) throw new Error("Arquivo XML inválido ou corrompido.");
+
+  const infNFe = elementosPorTag(doc, "infNFe")[0];
+  if (!infNFe) throw new Error("Não encontrei os dados da nota nesse arquivo — confira se é o XML da NFC-e (não o PDF/DANFE).");
+
+  const chaveAcesso = (infNFe.getAttribute("Id") || "").replace(/^NFe/, "");
+  const emit = elementosPorTag(infNFe, "emit")[0];
+  const cnpjEmit = emit ? textoDe(emit, "CNPJ") : "";
+  const nomeEmit = emit ? (textoDe(emit, "xFant") || textoDe(emit, "xNome")) : "";
+  const ide = elementosPorTag(infNFe, "ide")[0];
+  const dataEmissao = ide ? textoDe(ide, "dhEmi") : null;
+  const totalTag = elementosPorTag(infNFe, "ICMSTot")[0];
+  const valorTotal = totalTag ? numDe(textoDe(totalTag, "vNF")) : null;
+
+  const dets = elementosPorTag(infNFe, "det");
+  const itens = dets.map((det) => {
+    const prod = elementosPorTag(det, "prod")[0];
+    return {
+      id: uid(),
+      descricao: prod ? textoDe(prod, "xProd") : "",
+      quantidade: prod ? numDe(textoDe(prod, "qCom")) : null,
+      valor_unitario: prod ? numDe(textoDe(prod, "vUnCom")) : null,
+      valor_total: prod ? numDe(textoDe(prod, "vProd")) : null,
+      vinculado_item_id: null,
+      ignorado: false,
+    };
+  });
+
+  if (!chaveAcesso || !itens.length) throw new Error("Não consegui ler os itens dessa nota — confira se o arquivo é o XML certo.");
+  return { chave_acesso: chaveAcesso, cnpj_emit: cnpjEmit, nome_emit: nomeEmit, data_emissao: dataEmissao, valor_total: valorTotal, itens };
+}
+/* Pontua o quanto a descrição bruta da nota ("ARROZ TP1 5KG TIO JOAO") combina com um item da lista —
+   nome do produto vale mais, marca aparecendo como substring é sinal forte. */
+function pontuarMatchNfe(descricaoNfe, item, catalogo) {
+  const variante = by(catalogo.variantes, item.produto_variante_id);
+  const produto = variante && by(catalogo.produtos, variante.produto_id);
+  if (!produto) return 0;
+  const marca = variante?.marca_id ? by(catalogo.marcas, variante.marca_id) : null;
+  const descNorm = normalizar(descricaoNfe);
+  const palavrasNfe = new Set(descNorm.split(/\s+/).filter(Boolean));
+  let pontos = 0;
+  for (const p of normalizar(produto.nome).split(/\s+/).filter(Boolean)) if (palavrasNfe.has(p)) pontos += 2;
+  if (marca?.nome) {
+    const marcaJunta = normalizar(marca.nome).replace(/\s+/g, "");
+    if (descNorm.replace(/\s+/g, "").includes(marcaJunta)) pontos += 3;
+  }
+  return pontos;
+}
+function melhorMatchNfe(descricaoNfe, itensCandidatos, catalogo) {
+  let melhor = null, melhorPontos = 0;
+  for (const item of itensCandidatos) {
+    const pontos = pontuarMatchNfe(descricaoNfe, item, catalogo);
+    if (pontos > melhorPontos) { melhorPontos = pontos; melhor = item; }
+  }
+  return melhorPontos >= 2 ? melhor : null;
+}
+/* Evita anexar a mesma nota duas vezes por engano — procura a chave de acesso em todas as sessões */
+function sessaoComMesmaNfe(sessoes, chaveAcesso, ignorarSessaoId) {
+  return sessoes.find((s) => s.id !== ignorarSessaoId && s.nfe?.chave_acesso === chaveAcesso) || null;
+}
+
+/* =========================================================
    COMPARAÇÃO DE PREÇO POR UNIDADE ENTRE TAMANHOS (seção 22.10, parte 1)
    Normaliza preço pago pra uma unidade-base (kg/l/un) e compara variantes
    que dividem mesmo produto + mesma marca (inclusive "genérico").
@@ -6285,23 +6364,192 @@ function ModalEditarItem({ item, catalogo, setCatalogo, sessoes, sessaoAtiva, pr
 }
 
 /* =========================================================
+   CONFERÊNCIA DE NFC-e (seção 26): revisão item a item, sem aplicar nada sozinho.
+   Usada tanto na Prévia (antes de finalizar) quanto numa compra já fechada sem nota.
+========================================================= */
+function ModalConferenciaNfe({ nfeInicial, itens, catalogo, onConfirmar, onFechar }) {
+  useFecharComVoltar(true, onFechar);
+  const [nfe, setNfe] = useState(() => {
+    const copia = { ...nfeInicial, itens: nfeInicial.itens.map((l) => ({ ...l })) };
+    const usados = new Set();
+    for (const linha of copia.itens) {
+      const candidatos = itens.filter((it) => it.comprado && !usados.has(it.id));
+      const achado = melhorMatchNfe(linha.descricao, candidatos, catalogo);
+      if (achado) { linha.vinculado_item_id = achado.id; usados.add(achado.id); }
+    }
+    return copia;
+  });
+  const [vinculando, setVinculando] = useState(null); // id da linha da nota que está escolhendo item manualmente
+
+  function atualizarLinha(linhaId, patch) {
+    setNfe((n) => ({ ...n, itens: n.itens.map((l) => (l.id === linhaId ? { ...l, ...patch } : l)) }));
+  }
+  function itemDaLinha(linha) { return linha.vinculado_item_id ? itens.find((it) => it.id === linha.vinculado_item_id) : null; }
+
+  const itensSemNota = itens.filter((it) => it.comprado && !nfe.itens.some((l) => l.vinculado_item_id === it.id));
+
+  function confirmar() {
+    onConfirmar(nfe);
+  }
+
+  return (
+    <div className="fixed inset-0 bg-white z-[75] flex flex-col max-w-md mx-auto">
+      <div className="flex items-center gap-3 p-4 border-b border-stone-200 shrink-0">
+        <button onClick={onFechar} aria-label="Voltar" className="tap-target">←</button>
+        <h3 className="text-lg font-bold">Conferir nota fiscal</h3>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="bg-stone-50 border border-stone-200 rounded-xl p-3 text-sm">
+          <div className="font-semibold text-stone-700">{nfe.nome_emit || "Emitente não identificado"}</div>
+          <div className="text-xs text-stone-500 font-mono2">{nfe.data_emissao ? dataCurta(nfe.data_emissao) : ""} · Total da nota: {brl(nfe.valor_total)}</div>
+        </div>
+
+        <div>
+          <div className="text-xs font-semibold text-stone-400 uppercase mb-2">Itens da nota ({nfe.itens.length})</div>
+          <div className="space-y-2">
+            {nfe.itens.map((linha) => {
+              const item = itemDaLinha(linha);
+              if (linha.ignorado) {
+                return (
+                  <div key={linha.id} className="bg-stone-50 border border-stone-200 rounded-xl p-3 opacity-60">
+                    <div className="text-xs text-stone-400 truncate">{linha.descricao} — ignorada</div>
+                    <button onClick={() => atualizarLinha(linha.id, { ignorado: false })} className="text-xs text-emerald-700 underline tap-target">Desfazer</button>
+                  </div>
+                );
+              }
+              if (!item) {
+                return (
+                  <div key={linha.id} className="bg-white border border-amber-300 rounded-xl p-3">
+                    <div className="text-xs text-amber-700 uppercase font-semibold mb-1">Não encontrado na sua lista</div>
+                    <div className="text-sm font-semibold text-stone-700 truncate">{linha.descricao}</div>
+                    <div className="text-xs font-mono2 text-stone-500 mb-2">{linha.quantidade}x · {brl(linha.valor_total)}</div>
+                    {vinculando === linha.id ? (
+                      <div className="space-y-1 border-t border-stone-100 pt-2">
+                        {itens.filter((it) => it.comprado).map((it) => {
+                          const v = by(catalogo.variantes, it.produto_variante_id);
+                          const p = v && by(catalogo.produtos, v.produto_id);
+                          return (
+                            <button key={it.id} onClick={() => { atualizarLinha(linha.id, { vinculado_item_id: it.id }); setVinculando(null); }}
+                              className="w-full text-left text-xs bg-stone-50 rounded-lg px-2 py-1.5 tap-target">{p?.nome} · {brl(it.subtotal)}</button>
+                          );
+                        })}
+                        <button onClick={() => setVinculando(null)} className="text-xs text-stone-400 tap-target">Cancelar</button>
+                      </div>
+                    ) : (
+                      <div className="flex gap-2">
+                        <button onClick={() => setVinculando(linha.id)} className="flex-1 text-xs border border-stone-300 rounded-lg py-2 tap-target">Vincular a um item</button>
+                        <button onClick={() => atualizarLinha(linha.id, { ignorado: true })} className="flex-1 text-xs border border-stone-300 rounded-lg py-2 text-stone-500 tap-target">Ignorar linha</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+              const v = by(catalogo.variantes, item.produto_variante_id);
+              const p = v && by(catalogo.produtos, v.produto_id);
+              const precoIgual = Math.abs((item.subtotal || 0) - (linha.valor_total || 0)) < 0.02;
+              return (
+                <div key={linha.id} className={`bg-white border rounded-xl p-3 ${precoIgual ? "border-emerald-200" : "border-amber-300"}`}>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <div className="text-sm font-semibold text-stone-700 truncate">{p?.nome}</div>
+                    <span className="text-sm shrink-0">{precoIgual ? "✓" : "⚠️"}</span>
+                  </div>
+                  <div className="text-xs text-stone-400 truncate mb-1">na nota: "{linha.descricao}"</div>
+                  {precoIgual ? (
+                    <div className="text-xs font-mono2 text-emerald-700">Confere: {brl(linha.valor_total)}</div>
+                  ) : (
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs font-mono2 text-stone-500">Você: {brl(item.subtotal)} · nota: {brl(linha.valor_total)}</div>
+                      <button onClick={() => atualizarLinha(linha.id, { aceitarValorNota: true })}
+                        className={`text-xs font-semibold underline shrink-0 tap-target ${linha.aceitarValorNota ? "text-emerald-700" : "text-stone-500"}`}>
+                        {linha.aceitarValorNota ? "✓ vai usar o valor da nota" : "Usar valor da nota"}
+                      </button>
+                    </div>
+                  )}
+                  <button onClick={() => atualizarLinha(linha.id, { vinculado_item_id: null })} className="text-xs text-stone-400 underline mt-1 tap-target">Desvincular</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {!!itensSemNota.length && (
+          <div>
+            <div className="text-xs font-semibold text-red-600 uppercase mb-2">Não apareceram na nota</div>
+            <div className="space-y-2">
+              {itensSemNota.map((it) => {
+                const v = by(catalogo.variantes, it.produto_variante_id);
+                const p = v && by(catalogo.produtos, v.produto_id);
+                return (
+                  <div key={it.id} className="bg-white border border-red-200 rounded-xl p-3">
+                    <div className="text-sm font-semibold text-stone-700">{p?.nome} · {brl(it.subtotal)}</div>
+                    <p className="text-xs text-stone-400 mt-0.5">Pode ter sido erro de leitura na descrição, ou não estava mesmo na nota — sem problema deixar assim.</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="p-4 border-t border-stone-200 shrink-0">
+        <button onClick={confirmar} className="w-full bg-emerald-800 text-white font-semibold py-3 rounded-xl tap-target">✓ Confirmar conferência</button>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
    PRÉVIA DA COMPRA (seção 22.3 — antes era "fechar" direto).
    Mostra tudo, com gráfico embutido (22.4a); só finaliza ao tocar
    no botão separado "Finalizar compra".
 ========================================================= */
-function ModalPreviaCompra({ catalogo, sessao, setSessoes, onFinalizado, onClose }) {
+function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado, onClose }) {
   useFecharComVoltar(true, onClose);
   const totalCalc = sessao.itens.reduce((a, it) => a + (it.subtotal || 0), 0);
   const [notaTexto, setNotaTexto] = useState("");
+  const [nfeParaConferir, setNfeParaConferir] = useState(null);
+  const [erroNfe, setErroNfe] = useState(null);
+  const [confirmarSemNfe, setConfirmarSemNfe] = useState(false);
   const mercado = by(catalogo.mercados, sessao.mercado_id);
-  const nota = parsePrecoInteligente(notaTexto);
+  const nota = sessao.nfe?.conferida ? sessao.nfe.valor_total : parsePrecoInteligente(notaTexto);
   const diferenca = nota != null ? nota - totalCalc : null;
   const threshold = Math.max(0.5, totalCalc * 0.01);
   const alerta = diferenca != null && Math.abs(diferenca) > threshold;
   const comprados = sessao.itens.filter((it) => it.comprado);
   const entradasGrafico = entradasGraficoDe(subtotalPorCategoria(comprados, catalogo), catalogo);
 
+  async function aoEscolherArquivo(e) {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setErroNfe(null);
+    try {
+      const texto = await file.text();
+      const nfeLida = parsearNfeXml(texto);
+      const duplicada = sessaoComMesmaNfe(sessoes, nfeLida.chave_acesso, sessao.id);
+      if (duplicada) { setErroNfe("Essa nota já foi anexada numa outra compra do histórico."); return; }
+      setNfeParaConferir(nfeLida);
+    } catch (err) { setErroNfe(err.message); }
+  }
+
+  function confirmarConferencia(nfeConferida) {
+    setSessoes((ss) => ss.map((s) => {
+      if (s.id !== sessao.id) return s;
+      let itensAtualizados = s.itens;
+      for (const linha of nfeConferida.itens) {
+        if (linha.aceitarValorNota && linha.vinculado_item_id) {
+          itensAtualizados = itensAtualizados.map((it) => it.id === linha.vinculado_item_id
+            ? { ...it, preco_pago: linha.quantidade ? linha.valor_total / linha.quantidade : linha.valor_unitario, subtotal: linha.valor_total }
+            : it);
+        }
+      }
+      return { ...s, itens: itensAtualizados, nfe: { ...nfeConferida, conferida: true } };
+    }));
+    setNfeParaConferir(null);
+  }
+
   function finalizar() {
+    if (!sessao.nfe?.conferida && !confirmarSemNfe) { setConfirmarSemNfe(true); return; }
+    setConfirmarSemNfe(false);
     const naoComprados = sessao.itens.filter((it) => !it.comprado);
     const snapshot = snapshotCategorias(sessao.itens, catalogo);
     setSessoes((ss) => {
@@ -6339,10 +6587,31 @@ function ModalPreviaCompra({ catalogo, sessao, setSessoes, onFinalizado, onClose
             <GraficoCategorias entradas={entradasGrafico} />
           </div>
 
-          <div className="bg-white border border-stone-200 rounded-xl p-3 flex justify-between items-center mb-3">
-            <span className="text-sm font-semibold">Valor da nota fiscal</span>
-            <div className="flex items-center gap-1"><span className="text-stone-400 font-mono2 text-sm">R$</span><input value={notaTexto} onChange={(e) => setNotaTexto(sanitizarEntradaPreco(e.target.value))} placeholder="350=3,50" className="font-mono2 font-bold w-24 text-right outline-none" aria-label="Valor da nota fiscal" /></div>
+          <div className="bg-white border border-stone-200 rounded-xl p-3 mb-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-semibold">📄 Nota Fiscal</span>
+              {sessao.nfe?.conferida && <span className="text-xs text-emerald-700 font-semibold">✓ Conferida</span>}
+            </div>
+            {sessao.nfe?.conferida ? (
+              <div className="text-xs text-stone-500">{sessao.nfe.nome_emit || "Emitente não identificado"} · {sessao.nfe.itens.filter((l) => !l.ignorado).length} itens · {brl(sessao.nfe.valor_total)}</div>
+            ) : (
+              <>
+                <label className="flex items-center justify-center gap-2 border-2 border-dashed border-stone-300 rounded-xl py-3 text-sm text-stone-500 cursor-pointer tap-target">
+                  📎 Anexar XML da nota
+                  <input type="file" accept=".xml,text/xml" onChange={aoEscolherArquivo} className="hidden" />
+                </label>
+                {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
+                <p className="text-xs text-stone-400 mt-2">Ou preencha o valor manualmente abaixo, sem anexar nota.</p>
+              </>
+            )}
           </div>
+
+          {!sessao.nfe?.conferida && (
+            <div className="bg-white border border-stone-200 rounded-xl p-3 flex justify-between items-center mb-3">
+              <span className="text-sm font-semibold">Valor da nota fiscal</span>
+              <div className="flex items-center gap-1"><span className="text-stone-400 font-mono2 text-sm">R$</span><input value={notaTexto} onChange={(e) => setNotaTexto(sanitizarEntradaPreco(e.target.value))} placeholder="350=3,50" className="font-mono2 font-bold w-24 text-right outline-none" aria-label="Valor da nota fiscal" /></div>
+            </div>
+          )}
           {alerta && (
             <div className="bg-red-50 rounded-xl p-3 flex gap-2 items-start">
               <span className="text-red-500 mt-0.5 shrink-0">⚠️</span>
@@ -6356,6 +6625,15 @@ function ModalPreviaCompra({ catalogo, sessao, setSessoes, onFinalizado, onClose
         <p className="text-xs text-stone-400 text-center">Isso ainda não finaliza — é só a prévia.</p>
         <button onClick={finalizar} className="w-full bg-emerald-800 text-white font-semibold py-3 rounded-xl tap-target">✓ Finalizar compra</button>
       </div>
+      {nfeParaConferir && (
+        <ModalConferenciaNfe nfeInicial={nfeParaConferir} itens={sessao.itens} catalogo={catalogo}
+          onConfirmar={confirmarConferencia} onFechar={() => setNfeParaConferir(null)} />
+      )}
+      {confirmarSemNfe && (
+        <ModalConfirmar titulo="Finalizar sem nota fiscal" severo={false} textoConfirmar="Finalizar mesmo assim"
+          mensagem="Os valores ficam sem conferência oficial da nota fiscal. Você pode anexar a nota depois, direto no histórico dessa compra."
+          onConfirmar={finalizar} onCancelar={() => setConfirmarSemNfe(false)} />
+      )}
     </div>
   );
 }
@@ -6543,7 +6821,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
           onAdd={(item) => { atualizarSessao({ itens: [...sessaoAtiva.itens, item] }); setModalAdd(false); }} onClose={() => setModalAdd(false)} />
       )}
       {modalPrevia && (
-        <ModalPreviaCompra catalogo={catalogo} sessao={sessaoAtiva} setSessoes={setSessoes} onClose={() => setModalPrevia(false)} onFinalizado={onSessaoFinalizada} />
+        <ModalPreviaCompra catalogo={catalogo} sessao={sessaoAtiva} sessoes={sessoes} setSessoes={setSessoes} onClose={() => setModalPrevia(false)} onFinalizado={onSessaoFinalizada} />
       )}
       {itemEditando && (
         <ModalEditarItem item={itemEditando} catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} sessaoAtiva={sessaoAtiva} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey}
@@ -6563,6 +6841,8 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose }) {
   const comprados = sessao.itens.filter((it) => it.comprado);
   const total = comprados.reduce((a, it) => a + (it.subtotal || 0), 0);
   const [confirmar, setConfirmar] = useState(null);
+  const [nfeParaConferir, setNfeParaConferir] = useState(null);
+  const [erroNfe, setErroNfe] = useState(null);
 
   const entradasGrafico = sessao.grafico_categorias && sessao.grafico_categorias.length
     ? entradasGraficoDeSnapshot(sessao.grafico_categorias, catalogo)
@@ -6570,12 +6850,11 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose }) {
 
   function reabrir() {
     const jaTemAtiva = sessoes.some((s) => s.status === "em_andamento");
+    const avisoNfe = sessao.nfe?.conferida ? " Essa compra já foi conferida por uma nota fiscal — reabrir pode deixar os dados diferentes do que a nota mostra." : "";
     const executar = () => { setSessoes((ss) => ss.map((s) => (s.id === sessao.id ? { ...s, status: "em_andamento" } : s))); onClose(); };
-    if (jaTemAtiva) {
-      setConfirmar({ titulo: "Reabrir compra", severo: false, textoConfirmar: "Reabrir",
-        mensagem: "Já existe uma compra em andamento. Reabrir essa mesmo assim? Você poderá escolher entre elas na tela Lista.",
-        acao: () => { setConfirmar(null); executar(); } });
-    } else executar();
+    setConfirmar({ titulo: "Reabrir compra", severo: !!sessao.nfe?.conferida, textoConfirmar: "Reabrir",
+      mensagem: (jaTemAtiva ? "Já existe uma compra em andamento. Reabrir essa mesmo assim? Você poderá escolher entre elas na tela Lista." : "Reabrir essa compra pra correção?") + avisoNfe,
+      acao: () => { setConfirmar(null); executar(); } });
   }
   function excluir() {
     setConfirmar({
@@ -6583,6 +6862,34 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose }) {
       mensagem: "Excluir essa compra do histórico definitivamente? Isso também afeta as médias e relatórios que dependiam dela. Não dá pra desfazer.",
       acao: () => { setSessoes((ss) => ss.filter((s) => s.id !== sessao.id)); setConfirmar(null); onClose(); },
     });
+  }
+  async function aoEscolherArquivo(e) {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setErroNfe(null);
+    try {
+      const texto = await file.text();
+      const nfeLida = parsearNfeXml(texto);
+      const duplicada = sessaoComMesmaNfe(sessoes, nfeLida.chave_acesso, sessao.id);
+      if (duplicada) { setErroNfe("Essa nota já foi anexada numa outra compra do histórico."); return; }
+      setNfeParaConferir(nfeLida);
+    } catch (err) { setErroNfe(err.message); }
+  }
+  function confirmarConferencia(nfeConferida) {
+    setSessoes((ss) => ss.map((s) => {
+      if (s.id !== sessao.id) return s;
+      let itensAtualizados = s.itens;
+      for (const linha of nfeConferida.itens) {
+        if (linha.aceitarValorNota && linha.vinculado_item_id) {
+          itensAtualizados = itensAtualizados.map((it) => it.id === linha.vinculado_item_id
+            ? { ...it, preco_pago: linha.quantidade ? linha.valor_total / linha.quantidade : linha.valor_unitario, subtotal: linha.valor_total }
+            : it);
+        }
+      }
+      return { ...s, itens: itensAtualizados, nfe: { ...nfeConferida, conferida: true }, valor_nota_fiscal: nfeConferida.valor_total };
+    }));
+    setNfeParaConferir(null);
   }
 
   return (
@@ -6607,6 +6914,24 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose }) {
           <GraficoCategorias entradas={entradasGrafico} />
         </div>
 
+        <div className="bg-white border border-stone-200 rounded-xl p-3 mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-semibold">📄 Nota Fiscal</span>
+            {sessao.nfe?.conferida && <span className="text-xs text-emerald-700 font-semibold">✓ Conferida</span>}
+          </div>
+          {sessao.nfe?.conferida ? (
+            <div className="text-xs text-stone-500">{sessao.nfe.nome_emit || "Emitente não identificado"} · {sessao.nfe.itens.filter((l) => !l.ignorado).length} itens · {brl(sessao.nfe.valor_total)}</div>
+          ) : (
+            <>
+              <label className="flex items-center justify-center gap-2 border-2 border-dashed border-stone-300 rounded-xl py-3 text-sm text-stone-500 cursor-pointer tap-target">
+                📎 Anexar XML da nota agora
+                <input type="file" accept=".xml,text/xml" onChange={aoEscolherArquivo} className="hidden" />
+              </label>
+              {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
+            </>
+          )}
+        </div>
+
         <div className="text-sm text-stone-600 mb-1">Valor da nota: <b className="font-mono2">{brl(sessao.valor_nota_fiscal)}</b></div>
         <div className="flex gap-2 mt-3">
           <button onClick={reabrir} className="flex-1 py-2.5 rounded-lg border border-stone-300 text-stone-600 font-semibold text-sm bg-white tap-target">Reabrir p/ correção</button>
@@ -6614,6 +6939,10 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose }) {
         </div>
       </div>
       {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
+      {nfeParaConferir && (
+        <ModalConferenciaNfe nfeInicial={nfeParaConferir} itens={sessao.itens} catalogo={catalogo}
+          onConfirmar={confirmarConferencia} onFechar={() => setNfeParaConferir(null)} />
+      )}
     </div>
   );
 }

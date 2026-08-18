@@ -16,6 +16,7 @@
 <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
 <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
+  html, body { overscroll-behavior-y: none; }
   body { font-family: 'Inter', sans-serif; }
   .handwrite { font-family: 'Kalam', cursive; }
   .font-mono2 { font-family: 'IBM Plex Mono', monospace; }
@@ -64,6 +65,10 @@
 
 <script type="text/babel" data-presets="react,env">
 const { useState, useEffect, useRef } = React;
+
+/* Versão do app — atualizar manualmente a cada entrega, formato ano.mês.dia-sequência.
+   Mostrada na tela de carregamento e em Config > Sobre, pra confirmar que uma atualização chegou. */
+const VERSAO_APP = "2026.08.18-1";
 
 /* =========================================================
    HELPERS GERAIS
@@ -6670,7 +6675,7 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
     const naoComprados = sessao.itens.filter((it) => !it.comprado);
     const snapshot = snapshotCategorias(sessao.itens, catalogo);
     setSessoes((ss) => {
-      let novo = ss.map((s) => (s.id === sessao.id ? { ...s, status: "fechada", valor_nota_fiscal: nota, fechada_em: new Date().toISOString(), grafico_categorias: snapshot } : s));
+      let novo = ss.map((s) => (s.id === sessao.id ? { ...s, status: "fechada", reaberta_para_correcao: false, valor_nota_fiscal: nota, fechada_em: new Date().toISOString(), grafico_categorias: snapshot } : s));
       if (naoComprados.length && window.confirm(`${naoComprados.length} item(ns) não foram comprados. Levar pra uma nova lista rascunho?`)) {
         novo = [...novo, { id: uid(), mercado_id: sessao.mercado_id, data_hora: new Date().toISOString(), status: "em_andamento", origem: "manual", itens: naoComprados.map((it) => ({ ...it, id: uid(), preco_pago: null, subtotal: null, comprado: false })), valor_nota_fiscal: null, grafico_categorias: null }];
       }
@@ -6773,7 +6778,7 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
 /* =========================================================
    TELA: LISTA ATUAL
 ========================================================= */
-function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, setPrecoIaCache, apiKey, onSessaoFinalizada }) {
+function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, setPrecoIaCache, apiKey, onSessaoFinalizada, sessaoEmCorrecaoId }) {
   const ativas = sessoes.filter((s) => s.status === "em_andamento");
   const [sessaoAbertaId, setSessaoAbertaId] = useState(null);
   const [modalNova, setModalNova] = useState(false);
@@ -6783,9 +6788,10 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
   const [confirmar, setConfirmar] = useState(null);
 
   useEffect(() => {
+    if (sessaoEmCorrecaoId) { setSessaoAbertaId(sessaoEmCorrecaoId); return; }
     if (ativas.length === 1) setSessaoAbertaId(ativas[0].id);
     else if (ativas.length === 0) setSessaoAbertaId(null);
-  }, [ativas.length]);
+  }, [ativas.length, sessaoEmCorrecaoId]);
 
   if (!ativas.length) {
     const avisos = itensBaratosAgora(catalogo, sessoes, precoIaCache);
@@ -6807,7 +6813,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
     );
   }
 
-  if (ativas.length > 1 && !sessaoAbertaId) {
+  if (ativas.length > 1 && !sessaoAbertaId && !sessaoEmCorrecaoId) {
     return (
       <div className="h-full overflow-y-auto p-4">
         <h2 className="text-lg font-bold text-stone-700 mb-3">Você tem {ativas.length} compras em andamento — qual quer continuar?</h2>
@@ -6841,6 +6847,14 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
     });
   }
   function cancelarCompra() {
+    if (sessaoAtiva.id === sessaoEmCorrecaoId) {
+      setConfirmar({
+        titulo: "Cancelar correção", severo: false, textoConfirmar: "Cancelar correção",
+        mensagem: "Isso fecha a correção sem excluir nada — a compra volta pro histórico como estava antes de você reabrir.",
+        acao: () => { setSessoes((ss) => ss.map((s) => (s.id === sessaoAtiva.id ? { ...s, status: "fechada", reaberta_para_correcao: false } : s))); setConfirmar(null); },
+      });
+      return;
+    }
     setConfirmar({
       titulo: "Excluir compra em andamento", severo: false, textoConfirmar: "Excluir",
       mensagem: "Excluir essa compra em andamento? Ela não entra no histórico.",
@@ -6883,17 +6897,24 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
     return rec ?? ger ?? cruzada ?? ia ?? null;
   }
 
+  const emCorrecao = sessaoAtiva.id === sessaoEmCorrecaoId;
+
   return (
     <div className="h-full flex flex-col">
       <div className="p-4 pb-2 shrink-0">
+        {emCorrecao && (
+          <div className="bg-amber-100 text-amber-800 text-xs font-semibold rounded-lg px-3 py-2 mb-2 text-center">
+            🔧 Modo correção — finalize de novo pra voltar ao uso normal
+          </div>
+        )}
         <div className="bg-white border border-stone-200 rounded-xl p-3 flex items-center justify-between mb-2">
           <div className="flex items-center gap-2 min-w-0">
             <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: mercado?.cor }} />
             <div className="min-w-0"><div className="font-bold text-lg text-stone-800 leading-tight truncate">{mercado?.nome}</div><div className="text-xs text-stone-500">{dataCurta(sessaoAtiva.data_hora)}</div></div>
           </div>
           <div className="flex items-center gap-3 shrink-0">
-            {ativas.length > 1 && <button onClick={() => setSessaoAbertaId(null)} className="text-xs text-emerald-700 tap-target">trocar</button>}
-            <button onClick={cancelarCompra} className="text-xs text-red-400 tap-target">Excluir</button>
+            {ativas.length > 1 && !sessaoEmCorrecaoId && <button onClick={() => setSessaoAbertaId(null)} className="text-xs text-emerald-700 tap-target">trocar</button>}
+            <button onClick={cancelarCompra} className="text-xs text-red-400 tap-target">{emCorrecao ? "Cancelar correção" : "Excluir"}</button>
           </div>
         </div>
         <div className="flex gap-3 text-xs text-stone-500 px-1">
@@ -6967,7 +6988,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
 /* =========================================================
    DETALHE DE SESSÃO PASSADA (gráfico vem do instantâneo salvo — 22.4b)
 ========================================================= */
-function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose }) {
+function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabriuParaCorrecao }) {
   useFecharComVoltar(true, onClose);
   const mercado = by(catalogo.mercados, sessao.mercado_id);
   const comprados = sessao.itens.filter((it) => it.comprado);
@@ -6984,11 +7005,14 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose }) {
     : entradasGraficoDe(subtotalPorCategoria(comprados, catalogo), catalogo);
 
   function reabrir() {
-    const jaTemAtiva = sessoes.some((s) => s.status === "em_andamento");
     const avisoNfe = sessao.nfe?.conferida ? " Essa compra já foi conferida por uma nota fiscal — reabrir pode deixar os dados diferentes do que a nota mostra." : "";
-    const executar = () => { setSessoes((ss) => ss.map((s) => (s.id === sessao.id ? { ...s, status: "em_andamento" } : s))); onClose(); };
-    setConfirmar({ titulo: "Reabrir compra", severo: !!sessao.nfe?.conferida, textoConfirmar: "Reabrir",
-      mensagem: (jaTemAtiva ? "Já existe uma compra em andamento. Reabrir essa mesmo assim? Você poderá escolher entre elas na tela Lista." : "Reabrir essa compra pra correção?") + avisoNfe,
+    const executar = () => {
+      setSessoes((ss) => ss.map((s) => (s.id === sessao.id ? { ...s, status: "em_andamento", reaberta_para_correcao: true } : s)));
+      onClose();
+      onReabriuParaCorrecao();
+    };
+    setConfirmar({ titulo: "Reabrir pra correção", severo: !!sessao.nfe?.conferida, textoConfirmar: "Reabrir",
+      mensagem: "Você vai direto pra tela da Lista pra corrigir. Enquanto durar a correção, as outras abas ficam bloqueadas — assim que finalizar de novo, tudo volta ao normal." + avisoNfe,
       acao: () => { setConfirmar(null); executar(); } });
   }
   function excluir() {
@@ -7114,7 +7138,7 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose }) {
    sub-aba "Compras" (lista + busca + filtros) primeiro,
    sub-aba "Resumo" (agregados em gráfico) separada.
 ========================================================= */
-function TelaHistorico({ catalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAutomatico }) {
+function TelaHistorico({ catalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAutomatico, onReabriuParaCorrecao }) {
   const [subaba, setSubaba] = useState("compras");
   const [busca, setBusca] = useState("");
   const [filtroMercado, setFiltroMercado] = useState("");
@@ -7129,7 +7153,7 @@ function TelaHistorico({ catalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAu
 
   if (detalheId) {
     const s = fechadas.find((x) => x.id === detalheId);
-    if (s) return <SessaoDetalhe catalogo={catalogo} sessao={s} sessoes={sessoes} setSessoes={setSessoes} onClose={() => setDetalheId(null)} />;
+    if (s) return <SessaoDetalhe catalogo={catalogo} sessao={s} sessoes={sessoes} setSessoes={setSessoes} onClose={() => setDetalheId(null)} onReabriuParaCorrecao={onReabriuParaCorrecao} />;
   }
 
   const porMes = {}, porMercado = {}, porCategoria = {};
@@ -7308,6 +7332,11 @@ function TelaConfig({ catalogo, setCatalogo, sessoes, setSessoes, setPrecoIaCach
         <button onClick={() => exportarExcel(sessoes, catalogo)} className="w-full bg-emerald-700 text-white text-sm font-semibold py-2.5 rounded-lg tap-target">📊 Exportar .xlsx</button>
       </div>
 
+      <div className="bg-white border border-stone-200 rounded-xl p-4">
+        <div className="font-semibold text-stone-700 mb-1">Sobre</div>
+        <div className="text-xs text-stone-500 font-mono2">🧺 Nossa Casa — versão {VERSAO_APP}</div>
+      </div>
+
       <button onClick={apagarTudo} className="text-xs text-red-400 underline block mx-auto pt-2 tap-target">Apagar todos os dados e recomeçar</button>
       {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
     </div>
@@ -7317,7 +7346,7 @@ function TelaConfig({ catalogo, setCatalogo, sessoes, setSessoes, setPrecoIaCach
 /* =========================================================
    NAVEGAÇÃO INFERIOR
 ========================================================= */
-function TabBarInterna({ aba, setAba, temSessaoAtiva }) {
+function TabBarInterna({ aba, setAba, temSessaoAtiva, restrito }) {
   const itens = [
     { id: "lista", label: "Lista", icon: "🛒" }, { id: "mercados", label: "Mercados", icon: "🏬" },
     { id: "produtos", label: "Produtos", icon: "📦" }, { id: "historico", label: "Histórico", icon: "🕓" }, { id: "config", label: "Config", icon: "⚙️" },
@@ -7326,8 +7355,10 @@ function TabBarInterna({ aba, setAba, temSessaoAtiva }) {
     <div className="flex border-t border-stone-200 bg-white shrink-0">
       {itens.map((it) => {
         const ativo = aba === it.id;
+        const bloqueado = restrito && it.id !== "lista";
         return (
-          <button key={it.id} onClick={() => setAba(it.id)} aria-label={it.label} className={`flex-1 flex flex-col items-center gap-1 py-2.5 text-xs font-medium tap-target ${ativo ? "text-emerald-700" : "text-stone-400"}`}>
+          <button key={it.id} onClick={() => setAba(it.id)} disabled={bloqueado} aria-label={bloqueado ? `${it.label} (bloqueado durante correção)` : it.label}
+            className={`flex-1 flex flex-col items-center gap-1 py-2.5 text-xs font-medium tap-target ${bloqueado ? "text-stone-300" : ativo ? "text-emerald-700" : "text-stone-400"}`}>
             <span className="text-lg leading-none">{it.icon}</span>
             <span className="flex items-center gap-1">{it.label}{it.id === "lista" && temSessaoAtiva && <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 inline-block" />}</span>
           </button>
@@ -7366,7 +7397,22 @@ function App() {
   function setApiKey(k) { setApiKeyState(k); localStorage.setItem("nc_apiKey", k); }
   function onSessaoFinalizada(sessaoId) { setAba("historico"); setSessaoParaAbrir(sessaoId); }
 
-  if (loading || !catalogo) return <div className="h-screen flex items-center justify-center bg-stone-100 text-stone-400">Carregando…</div>;
+  const sessaoEmCorrecao = sessoes.find((s) => s.status === "em_andamento" && s.reaberta_para_correcao);
+  const emModoCorrecao = !!sessaoEmCorrecao;
+
+  useEffect(() => { if (emModoCorrecao && aba !== "lista") setAba("lista"); }, [emModoCorrecao]);
+
+  function mudarAba(novaAba) {
+    if (emModoCorrecao && novaAba !== "lista") return;
+    setAba(novaAba);
+  }
+
+  if (loading || !catalogo) return (
+    <div className="h-screen flex flex-col items-center justify-center bg-stone-100 text-stone-400 gap-2">
+      <div>Carregando…</div>
+      <div className="text-xs font-mono2 text-stone-300">v{VERSAO_APP}</div>
+    </div>
+  );
 
   const temSessaoAtiva = sessoes.some((s) => s.status === "em_andamento");
 
@@ -7393,15 +7439,20 @@ function App() {
           <button onClick={() => setErroSalvamento(false)} className="underline font-semibold shrink-0 tap-target">Ok</button>
         </div>
       )}
+      {emModoCorrecao && (
+        <div className="bg-amber-600 text-white text-xs p-2 text-center shrink-0">
+          🔧 Corrigindo uma compra já fechada — as outras abas ficam bloqueadas até você finalizar de novo.
+        </div>
+      )}
 
       <div className="flex-1 overflow-hidden">
-        {aba === "lista" && <TelaLista catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} onSessaoFinalizada={onSessaoFinalizada} />}
+        {aba === "lista" && <TelaLista catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} onSessaoFinalizada={onSessaoFinalizada} sessaoEmCorrecaoId={sessaoEmCorrecao?.id || null} />}
         {aba === "mercados" && <TelaMercados catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} />}
         {aba === "produtos" && <TelaProdutos catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} />}
-        {aba === "historico" && <TelaHistorico catalogo={catalogo} sessoes={sessoes} setSessoes={setSessoes} abrirSessaoId={sessaoParaAbrir} onAbriuAutomatico={() => setSessaoParaAbrir(null)} />}
+        {aba === "historico" && <TelaHistorico catalogo={catalogo} sessoes={sessoes} setSessoes={setSessoes} abrirSessaoId={sessaoParaAbrir} onAbriuAutomatico={() => setSessaoParaAbrir(null)} onReabriuParaCorrecao={() => setAba("lista")} />}
         {aba === "config" && <TelaConfig catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} setApiKey={setApiKey} lastBackup={lastBackup} setLastBackup={setLastBackup} />}
       </div>
-      <TabBarInterna aba={aba} setAba={setAba} temSessaoAtiva={temSessaoAtiva} />
+      <TabBarInterna aba={aba} setAba={mudarAba} temSessaoAtiva={temSessaoAtiva} restrito={emModoCorrecao} />
     </div>
   );
 }

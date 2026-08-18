@@ -411,6 +411,42 @@ function melhorMatchNfe(descricaoNfe, itensCandidatos, catalogo) {
 function sessaoComMesmaNfe(sessoes, chaveAcesso, ignorarSessaoId) {
   return sessoes.find((s) => s.id !== ignorarSessaoId && s.nfe?.chave_acesso === chaveAcesso) || null;
 }
+/* Nível 2 (seção 27): o QR Code do cupom aponta pra uma URL do portal da Sefaz contendo a chave de
+   acesso (44 dígitos) como parâmetro — não dá pra baixar o XML direto por CORS, mas já adianta a
+   checagem de duplicidade e leva o usuário direto pro portal certo. */
+function extrairChaveDoQrNfce(conteudoQr) {
+  const porParametro = conteudoQr.match(/[?&]p=(\d{44})/);
+  if (porParametro) return porParametro[1];
+  const qualquerSequencia = conteudoQr.match(/(\d{44})/);
+  return qualquerSequencia ? qualquerSequencia[1] : null;
+}
+/* Nível 3 (seção 27): reserva pra quando não dá pra usar QR nem XML — só tenta ler o valor TOTAL
+   de uma foto do cupom, nunca os itens (OCR de cupom térmico não é confiável o suficiente pra isso).
+   Tesseract.js só carrega sob demanda (não pesa o app pra quem nunca usa essa função). */
+let promessaTesseractCarregado = null;
+function carregarTesseract() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  if (promessaTesseractCarregado) return promessaTesseractCarregado;
+  promessaTesseractCarregado = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://unpkg.com/tesseract.js@5/dist/tesseract.min.js";
+    script.onload = () => resolve(window.Tesseract);
+    script.onerror = () => reject(new Error("Não consegui carregar a leitura de texto — verifique sua internet."));
+    document.head.appendChild(script);
+  });
+  return promessaTesseractCarregado;
+}
+function extrairTotalDoTextoOcr(texto) {
+  const linhas = texto.split("\n");
+  for (const linha of linhas) {
+    if (/total/i.test(linha) && !/sub\s*total/i.test(linha)) {
+      const m = linha.match(/(\d{1,4}[.,]\d{2})/);
+      if (m) return numDe(m[1]);
+    }
+  }
+  const geral = texto.match(/total\D{0,10}(\d{1,4}[.,]\d{2})/i);
+  return geral ? numDe(geral[1]) : null;
+}
 
 /* =========================================================
    COMPARAÇÃO DE PREÇO POR UNIDADE ENTRE TAMANHOS (seção 22.10, parte 1)
@@ -4750,7 +4786,7 @@ function IconeCodigoBarras({ size = 18 }) {
   );
 }
 
-function ScannerCodigoBarras({ onDetectado, onFechar }) {
+function ScannerCodigoBarras({ onDetectado, onFechar, formatos = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128"], titulo = "Aponte pro código de barras" }) {
   useFecharComVoltar(true, onFechar);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -4762,7 +4798,7 @@ function ScannerCodigoBarras({ onDetectado, onFechar }) {
     if (!("BarcodeDetector" in window)) { setSuportado(false); return; }
     let cancelado = false;
     let detector;
-    try { detector = new window.BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128"] }); }
+    try { detector = new window.BarcodeDetector({ formats: formatos }); }
     catch (e) { setSuportado(false); return; }
 
     async function escanear() {
@@ -4795,7 +4831,7 @@ function ScannerCodigoBarras({ onDetectado, onFechar }) {
     return (
       <div className="fixed inset-0 bg-black/80 z-[80] flex items-center justify-center p-4" onClick={onFechar}>
         <div className="bg-white rounded-2xl p-5 max-w-sm" onClick={(e) => e.stopPropagation()}>
-          <p className="text-sm text-stone-700 mb-3">Esse navegador ainda não suporta leitura de código de barras pela câmera. Digite o número manualmente.</p>
+          <p className="text-sm text-stone-700 mb-3">Esse navegador ainda não suporta leitura pela câmera. {formatos.includes("qr_code") ? "Baixe o XML direto do portal da nota." : "Digite o número manualmente."}</p>
           <button onClick={onFechar} className="w-full py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Entendi</button>
         </div>
       </div>
@@ -4806,7 +4842,7 @@ function ScannerCodigoBarras({ onDetectado, onFechar }) {
     <div className="fixed inset-0 bg-black z-[80] flex flex-col">
       <div className="flex items-center gap-3 p-4 text-white shrink-0">
         <button onClick={onFechar} aria-label="Fechar leitor" className="tap-target">✕</button>
-        <h3 className="text-lg font-bold">Aponte pro código de barras</h3>
+        <h3 className="text-lg font-bold">{titulo}</h3>
       </div>
       <div className="flex-1 relative overflow-hidden">
         <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
@@ -6367,6 +6403,74 @@ function ModalEditarItem({ item, catalogo, setCatalogo, sessoes, sessaoAtiva, pr
    CONFERÊNCIA DE NFC-e (seção 26): revisão item a item, sem aplicar nada sozinho.
    Usada tanto na Prévia (antes de finalizar) quanto numa compra já fechada sem nota.
 ========================================================= */
+/* Nível 3 (OCR) — reserva pra quando não tem QR nem XML, só pro valor TOTAL, com carregamento
+   sob demanda do Tesseract.js. Sempre pede confirmação/edição antes de usar o valor lido. */
+function ModalLerCupomOcr({ onValorLido, onFechar }) {
+  useFecharComVoltar(true, onFechar);
+  const [processando, setProcessando] = useState(false);
+  const [erro, setErro] = useState(null);
+  const [valorEncontrado, setValorEncontrado] = useState(null);
+  const [valorTexto, setValorTexto] = useState("");
+
+  async function aoEscolherFoto(e) {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setErro(null);
+    setProcessando(true);
+    try {
+      const Tesseract = await carregarTesseract();
+      const resultado = await Tesseract.recognize(file, "por");
+      const total = extrairTotalDoTextoOcr(resultado.data.text);
+      if (total != null) { setValorEncontrado(total); setValorTexto(formatarValorCampo(total)); }
+      else { setErro("Não consegui identificar o total nessa foto. Tente uma foto mais nítida e enquadrada, ou digite o valor manualmente na Prévia."); }
+    } catch (err) { setErro("Não consegui ler essa foto: " + err.message); }
+    finally { setProcessando(false); }
+  }
+
+  function confirmar() {
+    const valor = parsePrecoInteligente(valorTexto);
+    if (valor != null) onValorLido(valor);
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[75]" onClick={onFechar}>
+      <div className="bg-white rounded-t-2xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-lg font-bold mb-1">📸 Ler total por foto</h3>
+        <p className="text-xs text-stone-500 mb-3">Reserva pra quando não tem QR Code nem XML — só tenta o valor total, não os itens (isso continua exigindo XML ou QR).</p>
+
+        {!processando && valorEncontrado == null && (
+          <label className="flex items-center justify-center gap-2 border-2 border-dashed border-stone-300 rounded-xl py-4 text-sm text-stone-500 cursor-pointer tap-target">
+            📷 Tirar foto do cupom
+            <input type="file" accept="image/*" capture="environment" onChange={aoEscolherFoto} className="hidden" />
+          </label>
+        )}
+        {processando && (
+          <div className="text-center py-6">
+            <div className="text-sm text-stone-500">Lendo o cupom...</div>
+            <div className="text-xs text-stone-400 mt-1">Pode levar alguns segundos</div>
+          </div>
+        )}
+        {erro && <p className="text-xs text-red-600 mt-2">{erro}</p>}
+
+        {valorEncontrado != null && (
+          <div className="mt-3">
+            <label className="text-xs font-semibold text-stone-500 uppercase">Valor identificado — confira antes de usar</label>
+            <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5 mt-1">
+              <span className="text-stone-400 font-mono2">R$</span>
+              <input value={valorTexto} onChange={(e) => setValorTexto(sanitizarEntradaPreco(e.target.value))} className="font-mono2 font-bold text-lg flex-1 outline-none" aria-label="Valor do total" />
+            </div>
+            <div className="flex gap-2 mt-3">
+              <button onClick={onFechar} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
+              <button onClick={confirmar} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Usar esse valor</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ModalConferenciaNfe({ nfeInicial, itens, catalogo, onConfirmar, onFechar }) {
   useFecharComVoltar(true, onFechar);
   const [nfe, setNfe] = useState(() => {
@@ -6509,6 +6613,9 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
   const [nfeParaConferir, setNfeParaConferir] = useState(null);
   const [erroNfe, setErroNfe] = useState(null);
   const [confirmarSemNfe, setConfirmarSemNfe] = useState(false);
+  const [lendoQr, setLendoQr] = useState(false);
+  const [chaveDoQr, setChaveDoQr] = useState(null);
+  const [lendoOcr, setLendoOcr] = useState(false);
   const mercado = by(catalogo.mercados, sessao.mercado_id);
   const nota = sessao.nfe?.conferida ? sessao.nfe.valor_total : parsePrecoInteligente(notaTexto);
   const diferenca = nota != null ? nota - totalCalc : null;
@@ -6516,6 +6623,16 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
   const alerta = diferenca != null && Math.abs(diferenca) > threshold;
   const comprados = sessao.itens.filter((it) => it.comprado);
   const entradasGrafico = entradasGraficoDe(subtotalPorCategoria(comprados, catalogo), catalogo);
+
+  function aoDetectarQr(conteudo) {
+    setLendoQr(false);
+    const chave = extrairChaveDoQrNfce(conteudo);
+    if (!chave) { setErroNfe("Não consegui identificar a chave da nota nesse QR Code."); return; }
+    const duplicada = sessaoComMesmaNfe(sessoes, chave, sessao.id);
+    if (duplicada) { setErroNfe("Essa nota já foi anexada numa outra compra do histórico."); return; }
+    setErroNfe(null);
+    setChaveDoQr({ chave, url: conteudo });
+  }
 
   async function aoEscolherArquivo(e) {
     const file = e.target.files[0];
@@ -6600,8 +6717,17 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
                   📎 Anexar XML da nota
                   <input type="file" accept=".xml,text/xml" onChange={aoEscolherArquivo} className="hidden" />
                 </label>
+                <button onClick={() => setLendoQr(true)} className="w-full flex items-center justify-center gap-2 border border-stone-300 rounded-xl py-2.5 text-sm text-stone-500 mt-2 tap-target">
+                  📷 Ler QR Code da nota
+                </button>
                 {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
-                <p className="text-xs text-stone-400 mt-2">Ou preencha o valor manualmente abaixo, sem anexar nota.</p>
+                {chaveDoQr && (
+                  <div className="bg-stone-50 rounded-lg p-2.5 mt-2 text-xs">
+                    <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. O XML não dá pra baixar direto por aqui — abre o portal da nota e baixa de lá, depois volta e anexa o arquivo.</div>
+                    <button onClick={() => window.open(chaveDoQr.url, "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir portal da nota →</button>
+                  </div>
+                )}
+                <p className="text-xs text-stone-400 mt-2">Sem QR nem XML? <button onClick={() => setLendoOcr(true)} className="text-emerald-700 font-semibold underline tap-target">Ler o total por foto</button>, ou preencha manualmente abaixo.</p>
               </>
             )}
           </div>
@@ -6628,6 +6754,12 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
       {nfeParaConferir && (
         <ModalConferenciaNfe nfeInicial={nfeParaConferir} itens={sessao.itens} catalogo={catalogo}
           onConfirmar={confirmarConferencia} onFechar={() => setNfeParaConferir(null)} />
+      )}
+      {lendoQr && (
+        <ScannerCodigoBarras formatos={["qr_code"]} titulo="Aponte pro QR Code da nota" onDetectado={aoDetectarQr} onFechar={() => setLendoQr(false)} />
+      )}
+      {lendoOcr && (
+        <ModalLerCupomOcr onValorLido={(valor) => { setNotaTexto(formatarValorCampo(valor)); setLendoOcr(false); }} onFechar={() => setLendoOcr(false)} />
       )}
       {confirmarSemNfe && (
         <ModalConfirmar titulo="Finalizar sem nota fiscal" severo={false} textoConfirmar="Finalizar mesmo assim"
@@ -6843,6 +6975,9 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose }) {
   const [confirmar, setConfirmar] = useState(null);
   const [nfeParaConferir, setNfeParaConferir] = useState(null);
   const [erroNfe, setErroNfe] = useState(null);
+  const [lendoQr, setLendoQr] = useState(false);
+  const [chaveDoQr, setChaveDoQr] = useState(null);
+  const [lendoOcr, setLendoOcr] = useState(false);
 
   const entradasGrafico = sessao.grafico_categorias && sessao.grafico_categorias.length
     ? entradasGraficoDeSnapshot(sessao.grafico_categorias, catalogo)
@@ -6862,6 +6997,15 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose }) {
       mensagem: "Excluir essa compra do histórico definitivamente? Isso também afeta as médias e relatórios que dependiam dela. Não dá pra desfazer.",
       acao: () => { setSessoes((ss) => ss.filter((s) => s.id !== sessao.id)); setConfirmar(null); onClose(); },
     });
+  }
+  function aoDetectarQr(conteudo) {
+    setLendoQr(false);
+    const chave = extrairChaveDoQrNfce(conteudo);
+    if (!chave) { setErroNfe("Não consegui identificar a chave da nota nesse QR Code."); return; }
+    const duplicada = sessaoComMesmaNfe(sessoes, chave, sessao.id);
+    if (duplicada) { setErroNfe("Essa nota já foi anexada numa outra compra do histórico."); return; }
+    setErroNfe(null);
+    setChaveDoQr({ chave, url: conteudo });
   }
   async function aoEscolherArquivo(e) {
     const file = e.target.files[0];
@@ -6927,7 +7071,17 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose }) {
                 📎 Anexar XML da nota agora
                 <input type="file" accept=".xml,text/xml" onChange={aoEscolherArquivo} className="hidden" />
               </label>
+              <button onClick={() => setLendoQr(true)} className="w-full flex items-center justify-center gap-2 border border-stone-300 rounded-xl py-2.5 text-sm text-stone-500 mt-2 tap-target">
+                📷 Ler QR Code da nota
+              </button>
               {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
+              {chaveDoQr && (
+                <div className="bg-stone-50 rounded-lg p-2.5 mt-2 text-xs">
+                  <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. Abre o portal da nota, baixa o XML de lá, e depois anexa o arquivo aqui.</div>
+                  <button onClick={() => window.open(chaveDoQr.url, "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir portal da nota →</button>
+                </div>
+              )}
+              <p className="text-xs text-stone-400 mt-2">Sem QR nem XML? <button onClick={() => setLendoOcr(true)} className="text-emerald-700 font-semibold underline tap-target">Ler o total por foto</button>.</p>
             </>
           )}
         </div>
@@ -6942,6 +7096,14 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose }) {
       {nfeParaConferir && (
         <ModalConferenciaNfe nfeInicial={nfeParaConferir} itens={sessao.itens} catalogo={catalogo}
           onConfirmar={confirmarConferencia} onFechar={() => setNfeParaConferir(null)} />
+      )}
+      {lendoQr && (
+        <ScannerCodigoBarras formatos={["qr_code"]} titulo="Aponte pro QR Code da nota" onDetectado={aoDetectarQr} onFechar={() => setLendoQr(false)} />
+      )}
+      {lendoOcr && (
+        <ModalLerCupomOcr
+          onValorLido={(valor) => { setSessoes((ss) => ss.map((s) => (s.id === sessao.id ? { ...s, valor_nota_fiscal: valor } : s))); setLendoOcr(false); }}
+          onFechar={() => setLendoOcr(false)} />
       )}
     </div>
   );

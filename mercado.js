@@ -6451,13 +6451,23 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
     setConfirmarSemNfe(false);
     const naoComprados = sessao.itens.filter((it) => !it.comprado);
     const snapshot = snapshotCategorias(sessao.itens, catalogo);
+    const dataFechamento = new Date().toISOString();
     setSessoes((ss) => {
-      let novo = ss.map((s) => (s.id === sessao.id ? { ...s, status: "fechada", reaberta_para_correcao: false, valor_nota_fiscal: nota, fechada_em: new Date().toISOString(), grafico_categorias: snapshot } : s));
+      let novo = ss.map((s) => (s.id === sessao.id ? { ...s, status: "fechada", reaberta_para_correcao: false, valor_nota_fiscal: nota, fechada_em: dataFechamento, grafico_categorias: snapshot } : s));
       if (naoComprados.length && window.confirm(`${naoComprados.length} item(ns) não foram comprados. Levar pra uma nova lista rascunho?`)) {
         novo = [...novo, { id: uid(), mercado_id: sessao.mercado_id, data_hora: new Date().toISOString(), status: "em_andamento", origem: "manual", itens: naoComprados.map((it) => ({ ...it, id: uid(), preco_pago: null, subtotal: null, comprado: false })), valor_nota_fiscal: null, grafico_categorias: null }];
       }
       return novo;
     });
+    /* Fase 6 do mapa de Finanças: integração automática — a compra finalizada vira despesa lá,
+       e a NFe conferida (se teve) já entra vinculada, sem precisar subir de novo. A função em si
+       mora em financas.js (dona do formato de dado); funciona mesmo com o módulo Finanças nunca
+       tendo sido aberto ainda, porque escreve direto no localStorage, não depende de estado React
+       montado. Se "integrarCompraMercado" não existir por algum motivo (financas.js não carregou),
+       falha silenciosamente — a compra do Mercado nunca deve travar por causa de outro módulo. */
+    if (typeof integrarCompraMercado === "function") {
+      integrarCompraMercado({ id: sessao.id, nfe: sessao.nfe, fechada_em: dataFechamento, itens: sessao.itens, valor_nota_fiscal: nota }, mercado?.nome);
+    }
     onClose();
     onFinalizado(sessao.id);
   }

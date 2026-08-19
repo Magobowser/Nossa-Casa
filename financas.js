@@ -751,7 +751,7 @@ function TelaConfigFinancas({ categorias, setCategorias, contas, setContas, lanc
   const [confirmar, setConfirmar] = useState(null);
   const [limiarTexto, setLimiarTexto] = useState(formatarValorCampo(limiar5Dias));
 
-  function salvarConta(dados) { setContas((cs) => upsertBy(cs, dados)); setFormConta(null); }
+  function salvarConta(dados) { setContas((cs) => upsertBy(cs, [dados])); setFormConta(null); }
   function removerConta(conta) {
     const temLancamento = lancamentos.some((l) => l.conta_id === conta.id);
     setConfirmar({
@@ -760,7 +760,7 @@ function TelaConfigFinancas({ categorias, setCategorias, contas, setContas, lanc
       acao: () => { setContas((cs) => cs.filter((c) => c.id !== conta.id)); setConfirmar(null); },
     });
   }
-  function salvarCategoria(dados) { setCategorias((cs) => upsertBy(cs, dados)); setFormCategoria(null); }
+  function salvarCategoria(dados) { setCategorias((cs) => upsertBy(cs, [dados])); setFormCategoria(null); }
   function removerCategoria(cat) {
     setConfirmar({
       titulo: "Excluir categoria", severo: false, textoConfirmar: "Excluir",
@@ -929,7 +929,7 @@ function TelaMetas({ metas, setMetas, contas, onAporteComoDespesa }) {
   const [modalAporte, setModalAporte] = useState(null);
   const [confirmar, setConfirmar] = useState(null);
 
-  function salvarMeta(dados) { setMetas((ms) => upsertBy(ms, dados)); setFormMeta(null); }
+  function salvarMeta(dados) { setMetas((ms) => upsertBy(ms, [dados])); setFormMeta(null); }
   function removerMeta(meta) {
     setConfirmar({
       titulo: "Excluir meta", severo: false, textoConfirmar: "Excluir",
@@ -1287,9 +1287,9 @@ function AppFinancas({ apiKey, setApiKey, onVoltarHub }) {
     if (dados.recorrente) {
       const fixoId = dados.origem_fixo_id || uid();
       dados = { ...dados, origem_fixo_id: fixoId };
-      setLancamentosFixos((fs) => upsertBy(fs, { ...dados, id: fixoId }));
+      setLancamentosFixos((fs) => upsertBy(fs, [{ ...dados, id: fixoId }]));
     }
-    setLancamentos((ls) => upsertBy(ls, dados));
+    setLancamentos((ls) => upsertBy(ls, [dados]));
   };
   function removerLancamentoReal(id) {
     setLancamentos((ls) => ls.filter((l) => l.id !== id));

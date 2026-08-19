@@ -64,7 +64,36 @@
 <div id="root"></div>
 
 <script>
-  window.VERSAO_APP = "2026.08.19-7"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
+  /* Captura de erro no nível da página inteira — o LimiteDeErro (dentro do React) só pega erro
+     que acontece DURANTE a renderização. Isso aqui pega o que ele não alcança: erro no
+     carregamento/execução de um dos arquivos .js, ou erro assíncrono (dentro de uma promise) que
+     nunca chega a entrar no ciclo do React. Sem isso, esses casos caem em tela branca sem pista
+     nenhuma de por quê. */
+  function mostrarErroDePagina(titulo, detalhe, pilha) {
+    var raiz = document.getElementById("root");
+    if (!raiz) return;
+    raiz.innerHTML =
+      '<div style="padding:20px;font-family:monospace;background:#fff;color:#111;min-height:100vh;box-sizing:border-box;">' +
+      '<h2 style="color:#b91c1c;margin-bottom:8px;">⚠️ ' + titulo + '</h2>' +
+      '<p style="font-weight:bold;margin-bottom:12px;white-space:pre-wrap;">' + String(detalhe || "erro desconhecido") + '</p>' +
+      (pilha ? '<pre style="font-size:11px;white-space:pre-wrap;background:#f5f5f4;padding:10px;border-radius:8px;">' + String(pilha) + '</pre>' : "") +
+      '<button onclick="window.location.reload()" style="margin-top:16px;padding:10px 16px;background:#065f46;color:#fff;border:none;border-radius:8px;font-weight:bold;">Recarregar</button>' +
+      '</div>';
+  }
+  window.addEventListener("error", function (evento) {
+    mostrarErroDePagina(
+      "Erro ao carregar/executar",
+      (evento.message || "erro sem mensagem") + "\n(arquivo: " + (evento.filename || "?") + ", linha " + (evento.lineno || "?") + ")",
+      evento.error && evento.error.stack
+    );
+  });
+  window.addEventListener("unhandledrejection", function (evento) {
+    mostrarErroDePagina("Promessa rejeitada sem tratamento", evento.reason && evento.reason.message ? evento.reason.message : String(evento.reason), evento.reason && evento.reason.stack);
+  });
+</script>
+
+<script>
+  window.VERSAO_APP = "2026.08.19-8"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
 </script>
 
 <script>
@@ -496,6 +525,22 @@ function Hub({ onEntrar }) {
 /* LimiteDeErro — rede de segurança: sem isso, qualquer erro de JavaScript num módulo derruba a
    árvore de React inteira e vira tela branca, sem nenhuma pista de por quê. Precisa ser uma
    classe (React não tem hook equivalente a componentDidCatch/getDerivedStateFromError ainda). */
+/* Mostrada quando um módulo (mercado.js/financas.js) não define o componente esperado — sinal
+   de que o arquivo não carregou/executou, não um erro de renderização (esse é o LimiteDeErro). */
+function TelaFalhaDeCarregamento({ nomeArquivo, onVoltarHub }) {
+  return (
+    <div className="h-screen flex flex-col items-center justify-center bg-stone-100 text-stone-600 gap-3 p-6 text-center max-w-md mx-auto">
+      <div className="text-4xl">⚠️</div>
+      <div className="font-bold">O arquivo <span className="font-mono2">{nomeArquivo}</span> não carregou.</div>
+      <p className="text-sm text-stone-500">Confere se ele existe no repositório do GitHub, com esse nome exato, e se sua internet está funcionando.</p>
+      <div className="flex gap-2 mt-2">
+        <button onClick={onVoltarHub} className="text-emerald-700 font-semibold underline tap-target">Voltar ao início</button>
+        <button onClick={() => window.location.reload()} className="text-emerald-700 font-semibold underline tap-target">Recarregar</button>
+      </div>
+    </div>
+  );
+}
+
 class LimiteDeErro extends React.Component {
   constructor(props) { super(props); this.state = { erro: null }; }
   static getDerivedStateFromError(erro) { return { erro }; }
@@ -541,9 +586,15 @@ function App() {
     </div>
   );
 
-  if (abaPrincipal === "mercado") return <LimiteDeErro><AppMercado apiKey={apiKey} setApiKey={setApiKey} onVoltarHub={() => setAbaPrincipal("hub")} /></LimiteDeErro>;
+  if (abaPrincipal === "mercado") {
+    if (typeof AppMercado === "undefined") return <TelaFalhaDeCarregamento nomeArquivo="mercado.js" onVoltarHub={() => setAbaPrincipal("hub")} />;
+    return <LimiteDeErro><AppMercado apiKey={apiKey} setApiKey={setApiKey} onVoltarHub={() => setAbaPrincipal("hub")} /></LimiteDeErro>;
+  }
 
-  if (abaPrincipal === "financas") return <LimiteDeErro><AppFinancas apiKey={apiKey} setApiKey={setApiKey} onVoltarHub={() => setAbaPrincipal("hub")} /></LimiteDeErro>;
+  if (abaPrincipal === "financas") {
+    if (typeof AppFinancas === "undefined") return <TelaFalhaDeCarregamento nomeArquivo="financas.js" onVoltarHub={() => setAbaPrincipal("hub")} />;
+    return <LimiteDeErro><AppFinancas apiKey={apiKey} setApiKey={setApiKey} onVoltarHub={() => setAbaPrincipal("hub")} /></LimiteDeErro>;
+  }
 
   return <Hub onEntrar={setAbaPrincipal} />;
 }

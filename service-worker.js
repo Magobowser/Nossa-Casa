@@ -8,9 +8,9 @@
       cache se estiver offline). O resto (bibliotecas externas, ícones, manifest) continua
       cache-first — muda raramente, e isso ajuda o app a funcionar offline. */
 
-const CACHE_NAME = "nossa-casa-v3";
+const CACHE_NAME = "nossa-casa-v4";
 const ARQUIVOS_DO_APP = [
-  "./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png",
+  "./", "./index.html", "./mercado.js", "./manifest.json", "./icon-192.png", "./icon-512.png",
   "https://cdn.tailwindcss.com",
   "https://unpkg.com/react@18/umd/react.production.min.js",
   "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
@@ -48,15 +48,20 @@ self.addEventListener("fetch", (event) => {
   /* preço por IA nunca passa pelo cache — precisa ser sempre uma busca ao vivo */
   if (event.request.url.includes("api.anthropic.com")) return;
 
-  const ehDocumentoHtml =
+  /* Seção 32 do mapa: HTML e código-fonte próprio do app (mercado.js, e futuros módulos como
+     financas.js) precisam SEMPRE andar na mesma versão — nunca pode buscar index.html novo mas
+     servir um mercado.js velho do cache, ou vice-versa. Por isso os dois entram como network-first.
+     Só bibliotecas de terceiros (CDN) continuam cache-first — essas raramente mudam de versão. */
+  const ehCodigoProprioDoApp =
     event.request.mode === "navigate" ||
     event.request.destination === "document" ||
     event.request.url.endsWith("/") ||
-    event.request.url.endsWith("index.html");
+    event.request.url.endsWith("index.html") ||
+    (event.request.url.endsWith(".js") && event.request.url.startsWith(self.location.origin));
 
-  if (ehDocumentoHtml) {
-    /* BUG 2 corrigido: network-first pro HTML — sempre tenta buscar a versão mais nova
-       primeiro, e só usa o cache como reserva se estiver offline. */
+  if (ehCodigoProprioDoApp) {
+    /* Network-first: sempre tenta buscar a versão mais nova primeiro, e só usa o cache
+       como reserva se estiver offline. */
     event.respondWith(
       fetch(event.request)
         .then((resposta) => {
@@ -71,8 +76,8 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  /* Resto do app (bibliotecas externas, ícones, manifest): cache-first, com atualização
-     em segundo plano — raramente muda, e cache-first ajuda no offline e na velocidade. */
+  /* Resto do app (bibliotecas de terceiros via CDN, ícones, manifest): cache-first, com
+     atualização em segundo plano — raramente muda, e cache-first ajuda no offline e na velocidade. */
   event.respondWith(
     caches.match(event.request).then((cacheada) => {
       const buscaNaRede = fetch(event.request)

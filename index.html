@@ -63,6 +63,39 @@
 <body class="bg-stone-200">
 <div id="root"></div>
 
+<script>
+  /* Seção 31 (item 10): a tela de carregamento do app espera essa checagem terminar (ou 2s,
+     o que vier primeiro) ANTES de mostrar a lista — assim, se tiver versão nova, o recarregamento
+     automático acontece durante o "Carregando…", não no meio do uso, de surpresa. */
+  window.__promessaVerificacaoAtualizacao = new Promise((resolve) => {
+    let resolvido = false;
+    function resolverUmaVez() { if (!resolvido) { resolvido = true; resolve(); } }
+    setTimeout(resolverUmaVez, 2000); // nunca trava o carregamento por mais que isso
+
+    if (!("serviceWorker" in navigator)) { resolverUmaVez(); return; }
+    navigator.serviceWorker.register("./service-worker.js", { updateViaCache: "none" }).then((reg) => {
+      reg.update().then(resolverUmaVez).catch(resolverUmaVez);
+      setInterval(() => reg.update(), 60 * 1000); // continua checando enquanto o app fica aberto
+
+      reg.addEventListener("updatefound", () => {
+        const novoSW = reg.installing;
+        if (!novoSW) return;
+        novoSW.addEventListener("statechange", () => {
+          if (novoSW.state === "installed" && navigator.serviceWorker.controller) {
+            novoSW.postMessage("SKIP_WAITING");
+          }
+        });
+      });
+      let jaRecarregou = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (jaRecarregou) return;
+        jaRecarregou = true;
+        window.location.reload();
+      });
+    }).catch(() => resolverUmaVez());
+  });
+</script>
+
 <script type="text/babel" data-presets="react,env">
 const { useState, useEffect, useRef } = React;
 
@@ -116,6 +149,11 @@ function diasDesde(dataStr) {
 }
 function dataCurta(dataStr) {
   return new Date(dataStr).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
+}
+/* Versão compacta pra caber como rótulo dentro do gráfico, ao lado de cada ponto */
+function dataCompacta(dataStr) {
+  const d = new Date(dataStr);
+  return `${d.getDate()}/${d.getMonth() + 1}`;
 }
 function mesAno(dataStr) {
   const d = new Date(dataStr);
@@ -425,6 +463,23 @@ function extrairChaveDoQrNfce(conteudoQr) {
   const qualquerSequencia = conteudoQr.match(/(\d{44})/);
   return qualquerSequencia ? qualquerSequencia[1] : null;
 }
+/* Reserva pro scanner (seção 30): Safari/iOS não tem BarcodeDetector nativo — nenhum navegador
+   no iPhone tem, é regra da Apple todo navegador ali usar o motor do Safari por baixo. A ZXing
+   decodifica em JavaScript puro, funciona em qualquer navegador, carregada só sob demanda. */
+let promessaZxingCarregado = null;
+function carregarZxing() {
+  if (window.ZXing) return Promise.resolve(window.ZXing);
+  if (promessaZxingCarregado) return promessaZxingCarregado;
+  promessaZxingCarregado = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://unpkg.com/@zxing/library@latest";
+    script.onload = () => resolve(window.ZXing);
+    script.onerror = () => reject(new Error("Não consegui carregar o leitor — verifique sua internet."));
+    document.head.appendChild(script);
+  });
+  return promessaZxingCarregado;
+}
+const MAPA_FORMATOS_ZXING = { ean_13: "EAN_13", ean_8: "EAN_8", upc_a: "UPC_A", upc_e: "UPC_E", code_128: "CODE_128", qr_code: "QR_CODE" };
 /* Nível 3 (seção 27): reserva pra quando não dá pra usar QR nem XML — só tenta ler o valor TOTAL
    de uma foto do cupom, nunca os itens (OCR de cupom térmico não é confiável o suficiente pra isso).
    Tesseract.js só carrega sob demanda (não pesa o app pra quem nunca usa essa função). */
@@ -561,6 +616,17 @@ function calcularPrecoComPromocao(precoNormal, quantidade, promocao) {
     const precoEfetivo = (precoNormal * unidadesPagas) / quantidade;
     return { precoEfetivo, ativada: true, faltam: 0 };
   }
+  /* "Bloco": preço fechado por lote (ex: "1 é 8, 2 é 15" — comum em hortifrúti). Diferente do
+     leve-pague: aqui não tem "unidade grátis", é um preço fixo pro bloco inteiro. Quantidade que
+     não completa um bloco paga o preço normal por unidade (sem exigir mínimo pra começar). */
+  if (promocao.tipo === "bloco") {
+    const qtdBloco = promocao.quantidade_bloco || 1, precoBloco = promocao.preco_bloco ?? precoNormal;
+    const blocosCompletos = Math.floor(quantidade / qtdBloco);
+    const restante = quantidade % qtdBloco;
+    const total = blocosCompletos * precoBloco + restante * precoNormal;
+    const precoEfetivo = total / quantidade;
+    return { precoEfetivo, ativada: true, faltam: restante > 0 ? qtdBloco - restante : 0 };
+  }
   return { precoEfetivo: precoNormal, ativada: true, faltam: 0 };
 }
 function descontoEfetivoPercentual(precoNormal, precoEfetivo) {
@@ -571,6 +637,7 @@ function textoPromocao(promocao) {
   if (!promocao) return "";
   if (promocao.tipo === "desconto_percentual") return `${promocao.percentual}% off (a partir de ${promocao.quantidade_minima} un.)`;
   if (promocao.tipo === "leve_pague") return `Leve ${promocao.leve}, pague ${promocao.pague}`;
+  if (promocao.tipo === "bloco") return `${promocao.quantidade_bloco} por ${brl(promocao.preco_bloco)}`;
   return "";
 }
 /* Lista cronológica só das compras que tiveram promoção — usada na tela de histórico da variante */
@@ -4796,26 +4863,27 @@ function ScannerCodigoBarras({ onDetectado, onFechar, formatos = ["ean_13", "ean
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const rafRef = useRef(null);
+  const zxingRef = useRef(null);
   const [erro, setErro] = useState(null);
   const [suportado, setSuportado] = useState(true);
+  const [carregandoReserva, setCarregandoReserva] = useState(false);
 
   useEffect(() => {
-    if (!("BarcodeDetector" in window)) { setSuportado(false); return; }
     let cancelado = false;
-    let detector;
-    try { detector = new window.BarcodeDetector({ formats: formatos }); }
-    catch (e) { setSuportado(false); return; }
 
-    async function escanear() {
-      if (cancelado || !videoRef.current) return;
-      try {
-        const codigos = await detector.detect(videoRef.current);
-        if (codigos.length) { onDetectado(codigos[0].rawValue); return; }
-      } catch (e) { /* frame inválido nessa passada, tenta de novo */ }
-      rafRef.current = requestAnimationFrame(escanear);
-    }
+    async function comBarcodeDetector() {
+      let detector;
+      try { detector = new window.BarcodeDetector({ formats: formatos }); }
+      catch (e) { comZxing(); return; }
 
-    async function iniciar() {
+      async function escanear() {
+        if (cancelado || !videoRef.current) return;
+        try {
+          const codigos = await detector.detect(videoRef.current);
+          if (codigos.length) { onDetectado(codigos[0].rawValue); return; }
+        } catch (e) { /* frame inválido nessa passada, tenta de novo */ }
+        rafRef.current = requestAnimationFrame(escanear);
+      }
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
         if (cancelado) { stream.getTracks().forEach((t) => t.stop()); return; }
@@ -4824,11 +4892,45 @@ function ScannerCodigoBarras({ onDetectado, onFechar, formatos = ["ean_13", "ean
         escanear();
       } catch (e) { setErro("Não consegui acessar a câmera — verifique a permissão do navegador pra esse site."); }
     }
-    iniciar();
+
+    /* Reserva pra quando não tem BarcodeDetector (Safari/iPhone — nenhum navegador ali tem essa
+       função nativa). Decodifica em JavaScript puro, mais lento mas funciona em qualquer lugar. */
+    async function comZxing() {
+      setCarregandoReserva(true);
+      try {
+        const ZXing = await carregarZxing();
+        if (cancelado) return;
+        setCarregandoReserva(false);
+        const formatosZxing = formatos.map((f) => MAPA_FORMATOS_ZXING[f]).filter(Boolean).map((nome) => ZXing.BarcodeFormat[nome]);
+        const hints = new Map();
+        if (formatosZxing.length) hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formatosZxing);
+        const leitor = new ZXing.BrowserMultiFormatReader(hints);
+        zxingRef.current = leitor;
+
+        const dispositivos = await leitor.listVideoInputDevices();
+        if (cancelado) return;
+        const traseira = dispositivos.find((d) => /back|tras|rear|environment/i.test(d.label || ""));
+        const deviceId = (traseira || dispositivos[dispositivos.length - 1] || dispositivos[0])?.deviceId;
+
+        leitor.decodeFromVideoDevice(deviceId, videoRef.current, (resultado) => {
+          if (cancelado || !resultado) return;
+          onDetectado(resultado.getText());
+        });
+      } catch (e) {
+        setCarregandoReserva(false);
+        setErro("Não consegui acessar a câmera — verifique a permissão do navegador pra esse site.");
+      }
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) { setSuportado(false); return; }
+    if ("BarcodeDetector" in window) comBarcodeDetector();
+    else comZxing();
+
     return () => {
       cancelado = true;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+      if (zxingRef.current) { try { zxingRef.current.reset(); } catch (e) {} }
     };
   }, []);
 
@@ -4836,7 +4938,7 @@ function ScannerCodigoBarras({ onDetectado, onFechar, formatos = ["ean_13", "ean
     return (
       <div className="fixed inset-0 bg-black/80 z-[80] flex items-center justify-center p-4" onClick={onFechar}>
         <div className="bg-white rounded-2xl p-5 max-w-sm" onClick={(e) => e.stopPropagation()}>
-          <p className="text-sm text-stone-700 mb-3">Esse navegador ainda não suporta leitura pela câmera. {formatos.includes("qr_code") ? "Baixe o XML direto do portal da nota." : "Digite o número manualmente."}</p>
+          <p className="text-sm text-stone-700 mb-3">Esse navegador não tem acesso à câmera disponível. {formatos.includes("qr_code") ? "Baixe o XML direto do portal da nota." : "Digite o número manualmente."}</p>
           <button onClick={onFechar} className="w-full py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Entendi</button>
         </div>
       </div>
@@ -4854,6 +4956,11 @@ function ScannerCodigoBarras({ onDetectado, onFechar, formatos = ["ean_13", "ean
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="w-64 h-32 border-2 border-emerald-400 rounded-lg" />
         </div>
+        {carregandoReserva && (
+          <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
+            <div className="text-white text-sm">Carregando leitor...</div>
+          </div>
+        )}
       </div>
       {erro && <div className="bg-red-600 text-white text-sm p-3 text-center">{erro}</div>}
     </div>
@@ -4876,31 +4983,38 @@ function ModalConfirmar({ titulo, mensagem, textoConfirmar = "Confirmar", severo
   );
 }
 
-function Sparkline({ pontos, largura = 280, altura = 70 }) {
+function Sparkline({ pontos, largura = 280, altura = 90 }) {
   if (!pontos || pontos.length < 2) {
     return <div className="text-xs text-stone-400 text-center py-3">Histórico curto demais pra gráfico ainda (precisa de pelo menos 2 compras).</div>;
   }
   const valores = pontos.map((p) => p.preco);
   const min = Math.min(...valores), max = Math.max(...valores);
   const range = max - min || 1;
+  const alturaUtil = altura - 16; // reserva espaço embaixo pras datas
   const passoX = largura / (pontos.length - 1);
-  const pontosXY = pontos.map((p, i) => ({ x: i * passoX, y: altura - ((p.preco - min) / range) * (altura - 14) - 7 }));
+  const pontosXY = pontos.map((p, i) => ({ x: i * passoX, y: alturaUtil - ((p.preco - min) / range) * (alturaUtil - 14) - 7 }));
   const linha = pontosXY.map((p) => `${p.x},${p.y}`).join(" ");
+  const mostrarTodasDatas = pontos.length <= 6;
   return (
     <div>
       <svg width="100%" viewBox={`0 0 ${largura} ${altura}`} preserveAspectRatio="none" className="mt-1">
         <polyline points={linha} fill="none" stroke="#2E6B4E" strokeWidth="2" />
         {pontosXY.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="3" fill="#2E6B4E" />)}
+        {pontosXY.map((p, i) => (mostrarTodasDatas || i === 0 || i === pontos.length - 1) && (
+          <text key={"d" + i} x={p.x} y={altura - 2} fontSize="7" fill="#a8a29e" textAnchor={i === 0 ? "start" : i === pontos.length - 1 ? "end" : "middle"}>{dataCompacta(pontos[i].data)}</text>
+        ))}
       </svg>
-      <div className="flex justify-between text-xs text-stone-400 font-mono2"><span>{brl(min)}</span><span>{brl(max)}</span></div>
+      <div className="flex justify-between text-xs text-stone-400 font-mono2"><span>Mín {brl(min)}</span><span>Máx {brl(max)}</span></div>
     </div>
   );
 }
 
 /* Seção 22.10, parte 2: gráfico de preço real x estimado por IA, com toggle por série.
    Eixo X é por DATA de verdade (não índice), pra alinhar as duas séries no tempo.
-   Estimativa por IA vem tracejada, pra nunca ser confundida com preço confirmado. */
-function GraficoPrecoDuplo({ pontosReal, pontosIA, largura = 280, altura = 90 }) {
+   Estimativa por IA vem tracejada, pra nunca ser confundida com preço confirmado.
+   Seção 31: rótulos agora dizem "Mín/Máx" explicitamente (não mais números soltos que pareciam
+   marcar início/fim do desenho) e cada ponto ganha a data embaixo, pra dar noção de escala. */
+function GraficoPrecoDuplo({ pontosReal, pontosIA, largura = 280, altura = 100 }) {
   const [verReal, setVerReal] = useState(pontosReal.length > 0);
   const [verIA, setVerIA] = useState(pontosReal.length === 0 && pontosIA.length > 0);
 
@@ -4912,15 +5026,18 @@ function GraficoPrecoDuplo({ pontosReal, pontosIA, largura = 280, altura = 90 })
   const visiveisReal = verReal ? pontosReal : [];
   const visiveisIA = verIA ? pontosIA : [];
   const valoresVisiveis = [...visiveisReal, ...visiveisIA].map((p) => p.preco);
+  const alturaUtil = altura - 16;
 
   function coordsDe(pontos) {
     const min = Math.min(...valoresVisiveis), max = Math.max(...valoresVisiveis);
     const range = max - min || 1;
     return pontos.map((p) => ({
       x: ((new Date(p.data).getTime() - minData) / (maxData - minData)) * largura,
-      y: altura - ((p.preco - min) / range) * (altura - 14) - 7,
+      y: alturaUtil - ((p.preco - min) / range) * (alturaUtil - 14) - 7,
     }));
   }
+  const totalPontosVisiveis = visiveisReal.length + visiveisIA.length;
+  const mostrarTodasDatas = totalPontosVisiveis <= 6;
 
   return (
     <div>
@@ -4943,10 +5060,22 @@ function GraficoPrecoDuplo({ pontosReal, pontosIA, largura = 280, altura = 90 })
               const c = coordsDe(pontosIA);
               return <polyline points={c.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="#8a8a8a" strokeWidth="2" strokeDasharray="4 3" />;
             })()}
-            {verReal && coordsDe(pontosReal).map((p, i) => <circle key={"r" + i} cx={p.x} cy={p.y} r="3" fill="var(--ink-green)" />)}
-            {verIA && coordsDe(pontosIA).map((p, i) => <circle key={"i" + i} cx={p.x} cy={p.y} r="3" fill="#8a8a8a" />)}
+            {verReal && coordsDe(pontosReal).map((p, i, arr) => (
+              <g key={"r" + i}>
+                <circle cx={p.x} cy={p.y} r="3" fill="var(--ink-green)" />
+                {(mostrarTodasDatas || i === 0 || i === arr.length - 1) &&
+                  <text x={p.x} y={altura - 2} fontSize="7" fill="#a8a29e" textAnchor={i === 0 ? "start" : i === arr.length - 1 ? "end" : "middle"}>{dataCompacta(pontosReal[i].data)}</text>}
+              </g>
+            ))}
+            {verIA && coordsDe(pontosIA).map((p, i, arr) => (
+              <g key={"i" + i}>
+                <circle cx={p.x} cy={p.y} r="3" fill="#8a8a8a" />
+                {(mostrarTodasDatas || i === 0 || i === arr.length - 1) &&
+                  <text x={p.x} y={altura - 2} fontSize="7" fill="#a8a29e" textAnchor={i === 0 ? "start" : i === arr.length - 1 ? "end" : "middle"}>{dataCompacta(pontosIA[i].data)}</text>}
+              </g>
+            ))}
           </svg>
-          <div className="flex justify-between text-xs text-stone-400 font-mono2"><span>{brl(Math.min(...valoresVisiveis))}</span><span>{brl(Math.max(...valoresVisiveis))}</span></div>
+          <div className="flex justify-between text-xs text-stone-400 font-mono2"><span>Mín {brl(Math.min(...valoresVisiveis))}</span><span>Máx {brl(Math.max(...valoresVisiveis))}</span></div>
         </>
       )}
     </div>
@@ -4955,8 +5084,9 @@ function GraficoPrecoDuplo({ pontosReal, pontosIA, largura = 280, altura = 90 })
 
 /* Gráfico comparativo entre tamanhos do mesmo produto+marca (pedido do usuário): cada tamanho vira
    uma linha própria, todas no mesmo eixo de tempo e no mesmo eixo de valor (preço normalizado por
-   kg/l/un) — dá pra ver visualmente qual tamanho valia mais a pena em cada momento, não só hoje. */
-function GraficoComparacaoTamanhos({ series, unidadeBase, largura = 300, altura = 120 }) {
+   kg/l/un) — dá pra ver visualmente qual tamanho valia mais a pena em cada momento, não só hoje.
+   Seção 31: mesma correção de rótulo Mín/Máx + datas por ponto. */
+function GraficoComparacaoTamanhos({ series, unidadeBase, largura = 300, altura = 130 }) {
   const seriesComDados = series.filter((s) => s.pontos.length >= 1);
   const todosPontos = seriesComDados.flatMap((s) => s.pontos);
   if (seriesComDados.length < 2 || todosPontos.length < 2) {
@@ -4969,13 +5099,15 @@ function GraficoComparacaoTamanhos({ series, unidadeBase, largura = 300, altura 
   const todosValores = todosPontos.map((p) => p.preco);
   const minV = Math.min(...todosValores), maxV = Math.max(...todosValores);
   const rangeV = maxV - minV || 1;
+  const alturaUtil = altura - 16;
 
   function coordsDe(pontos) {
     return pontos.map((p) => ({
       x: ((new Date(p.data).getTime() - minData) / (maxData - minData)) * largura,
-      y: altura - ((p.preco - minV) / rangeV) * (altura - 14) - 7,
+      y: alturaUtil - ((p.preco - minV) / rangeV) * (alturaUtil - 14) - 7,
     }));
   }
+  const mostrarTodasDatas = todosPontos.length <= 8;
 
   return (
     <div>
@@ -4983,10 +5115,16 @@ function GraficoComparacaoTamanhos({ series, unidadeBase, largura = 300, altura 
         {seriesComDados.map((s) => s.pontos.length >= 2 && (
           <polyline key={"linha-" + s.label} points={coordsDe(s.pontos).map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke={s.cor} strokeWidth="2" />
         ))}
-        {seriesComDados.map((s) => coordsDe(s.pontos).map((p, i) => <circle key={s.label + i} cx={p.x} cy={p.y} r="3" fill={s.cor} />))}
+        {seriesComDados.map((s) => coordsDe(s.pontos).map((p, i, arr) => (
+          <g key={s.label + i}>
+            <circle cx={p.x} cy={p.y} r="3" fill={s.cor} />
+            {(mostrarTodasDatas || i === 0 || i === arr.length - 1) &&
+              <text x={p.x} y={altura - 2} fontSize="7" fill="#a8a29e" textAnchor={i === 0 ? "start" : i === arr.length - 1 ? "end" : "middle"}>{dataCompacta(s.pontos[i].data)}</text>}
+          </g>
+        )))}
       </svg>
       <div className="flex justify-between text-xs text-stone-400 font-mono2 mb-2">
-        <span>{brl(minV)}/{unidadeBase}</span><span>{brl(maxV)}/{unidadeBase}</span>
+        <span>Mín {brl(minV)}/{unidadeBase}</span><span>Máx {brl(maxV)}/{unidadeBase}</span>
       </div>
       <div className="flex gap-3 flex-wrap">
         {seriesComDados.map((s) => <span key={s.label} className="text-xs flex items-center gap-1"><span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: s.cor }} />{s.label}</span>)}
@@ -5260,6 +5398,7 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
   const [subaba, setSubaba] = useState("produtos");
   const [busca, setBusca] = useState("");
   const [produtoAberto, setProdutoAberto] = useState(null);
+  const [categoriaExpandida, setCategoriaExpandida] = useState(null);
   const [formProduto, setFormProduto] = useState(null);
   const [formVariante, setFormVariante] = useState(null);
   const [formMarca, setFormMarca] = useState(null);
@@ -5281,6 +5420,15 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
     const alvo = normalizar(busca);
     if (normalizar(p.nome).includes(alvo)) return true;
     return catalogo.variantes.some((v) => v.produto_id === p.id && v.marca_id && normalizar(by(catalogo.marcas, v.marca_id)?.nome || "").includes(alvo));
+  }
+  /* Quando a busca bateu só pela marca (não pelo nome do produto), mostra só as variantes
+     daquela marca — evita listar as 5 marcas de um produto quando a pessoa procurou 1. */
+  function variantesParaExibir(p) {
+    const todas = catalogo.variantes.filter((v) => v.produto_id === p.id);
+    if (!busca.trim()) return todas;
+    const alvo = normalizar(busca);
+    if (normalizar(p.nome).includes(alvo)) return todas;
+    return todas.filter((v) => v.marca_id && normalizar(by(catalogo.marcas, v.marca_id)?.nome || "").includes(alvo));
   }
   const produtosFiltrados = catalogo.produtos.filter(produtoBateComBusca);
   const produtosPorCategoria = {};
@@ -5415,14 +5563,17 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
                 <div className="text-xs font-semibold text-stone-400 uppercase mb-2">{cat.icone} {cat.nome}</div>
                 <div className="space-y-2">
                   {produtos.map((p) => {
-                    const variantes = catalogo.variantes.filter((v) => v.produto_id === p.id);
+                    const variantes = variantesParaExibir(p);
+                    const totalVariantesDoProduto = catalogo.variantes.filter((v) => v.produto_id === p.id).length;
                     const aberto = produtoAberto === p.id;
                     return (
                       <div key={p.id} className="bg-white border border-stone-200 rounded-xl overflow-hidden">
                         <button className="w-full flex items-center justify-between p-3 text-left tap-target" onClick={() => setProdutoAberto(aberto ? null : p.id)}>
                           <div className="min-w-0">
                             <div className="font-semibold text-stone-800 truncate">{p.nome}</div>
-                            <div className="text-xs text-stone-400">{variantes.length} variante(s) · {p.unidade_padrao}</div>
+                            <div className="text-xs text-stone-400">
+                              {variantes.length !== totalVariantesDoProduto ? `${variantes.length} de ${totalVariantesDoProduto} variante(s) combinam` : `${totalVariantesDoProduto} variante(s)`} · {p.unidade_padrao}
+                            </div>
                           </div>
                           <span className="text-stone-400 shrink-0">{aberto ? "▾" : "▸"}</span>
                         </button>
@@ -5440,10 +5591,10 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
                                       {marca?.nome || "genérico"} · {tamanhoDisplay(v) || "—"}
                                     </div>
                                   </div>
-                                  <div className="flex gap-2 shrink-0">
-                                    <button onClick={() => setHistoricoVarianteId(v.id)} aria-label={`Histórico de ${marca?.nome || p.nome}`} className="text-stone-400 text-sm tap-target">📊</button>
-                                    <button onClick={() => setFormVariante(v)} aria-label={`Editar ${marca?.nome || p.nome}`} className="text-stone-400 text-sm tap-target">✏️</button>
-                                    <button onClick={() => removerVariante(v)} aria-label={`Excluir ${marca?.nome || p.nome}`} className="text-red-400 text-sm tap-target">🗑️</button>
+                                  <div className="flex gap-2.5 shrink-0">
+                                    <button onClick={() => setHistoricoVarianteId(v.id)} aria-label={`Histórico de ${marca?.nome || p.nome}`} className="flex flex-col items-center text-stone-400 tap-target"><span className="text-sm">📊</span><span className="text-[10px] leading-tight">Estatísticas</span></button>
+                                    <button onClick={() => setFormVariante(v)} aria-label={`Editar ${marca?.nome || p.nome}`} className="flex flex-col items-center text-stone-400 tap-target"><span className="text-sm">✏️</span><span className="text-[10px] leading-tight">Editar</span></button>
+                                    <button onClick={() => removerVariante(v)} aria-label={`Excluir ${marca?.nome || p.nome}`} className="flex flex-col items-center text-red-400 tap-target"><span className="text-sm">🗑️</span><span className="text-[10px] leading-tight">Apagar</span></button>
                                   </div>
                                 </div>
                               );
@@ -5489,11 +5640,27 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
           <button onClick={() => setFormCategoria({ nome: "", icone: "🛒" })} className="bg-emerald-700 text-white text-sm font-semibold px-3 py-2 rounded-lg mb-3 tap-target">+ Categoria</button>
           <div className="space-y-2">
             {catalogo.categorias.map((cat) => {
-              const usos = catalogo.produtos.filter((p) => p.categoria_id === cat.id).length;
+              const produtosDaCategoria = catalogo.produtos.filter((p) => p.categoria_id === cat.id);
+              const expandida = categoriaExpandida === cat.id;
               return (
-                <div key={cat.id} className="bg-white border border-stone-200 rounded-xl p-3 flex items-center justify-between">
-                  <div><div className="font-semibold text-stone-800">{cat.icone} {cat.nome}</div><div className="text-xs text-stone-400">{usos} produto(s)</div></div>
-                  <div className="flex gap-3"><button onClick={() => setFormCategoria(cat)} aria-label={`Editar categoria ${cat.nome}`} className="text-stone-400 tap-target">✏️</button><button onClick={() => removerCategoria(cat)} aria-label={`Excluir categoria ${cat.nome}`} className="text-red-400 tap-target">🗑️</button></div>
+                <div key={cat.id} className="bg-white border border-stone-200 rounded-xl overflow-hidden">
+                  <button className="w-full flex items-center justify-between p-3 text-left tap-target" onClick={() => setCategoriaExpandida(expandida ? null : cat.id)}>
+                    <div><div className="font-semibold text-stone-800">{cat.icone} {cat.nome}</div><div className="text-xs text-stone-400">{produtosDaCategoria.length} produto(s)</div></div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span onClick={(e) => { e.stopPropagation(); setFormCategoria(cat); }} aria-label={`Editar categoria ${cat.nome}`} className="text-stone-400 tap-target">✏️</span>
+                      <span onClick={(e) => { e.stopPropagation(); removerCategoria(cat); }} aria-label={`Excluir categoria ${cat.nome}`} className="text-red-400 tap-target">🗑️</span>
+                      <span className="text-stone-400">{expandida ? "▾" : "▸"}</span>
+                    </div>
+                  </button>
+                  {expandida && (
+                    <div className="border-t border-stone-100 p-3">
+                      {produtosDaCategoria.length ? (
+                        <div className="space-y-1">
+                          {produtosDaCategoria.map((p) => <div key={p.id} className="text-sm text-stone-600 py-1">{p.nome}</div>)}
+                        </div>
+                      ) : <p className="text-xs text-stone-400 text-center py-2">Nenhum produto nessa categoria ainda.</p>}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -5962,6 +6129,7 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
   const [unidade, setUnidade] = useState("un");
   const [precoTexto, setPrecoTexto] = useState("");
   const [buscandoIa, setBuscandoIa] = useState(false);
+  const [promocaoAtual, setPromocaoAtual] = useState(null);
 
   function aoDetectarCodigo(codigo) {
     setEscaneando(false);
@@ -6010,8 +6178,8 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
     });
   })();
 
-  function escolherVariante(vId) { setVarianteId(vId); setQuantidade(1); setPrecoTexto(""); setCriandoNovo(false); }
-  function escolherComPreco(vId, precoJaDigitado) { setVarianteId(vId); setQuantidade(1); setPrecoTexto(precoJaDigitado); setCriandoNovo(false); }
+  function escolherVariante(vId) { setVarianteId(vId); setQuantidade(1); setPrecoTexto(""); setCriandoNovo(false); setPromocaoAtual(null); }
+  function escolherComPreco(vId, precoJaDigitado) { setVarianteId(vId); setQuantidade(1); setPrecoTexto(precoJaDigitado); setCriandoNovo(false); setPromocaoAtual(null); }
 
   async function atualizarIA() {
     if (!variante || !produtoDaVariante) return;
@@ -6028,12 +6196,19 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
   function confirmarAdicionar() {
     const preco = parsePrecoInteligente(precoTexto);
     const qtd = numDe(quantidade) || 1;
-    onAdd({ id: uid(), produto_variante_id: varianteId, quantidade: qtd, unidade, preco_pago: preco, subtotal: preco != null ? preco * qtd : null, comprado: false });
+    if (promocaoAtual) {
+      const resultado = calcularPrecoComPromocao(preco, qtd, promocaoAtual);
+      if (!resultado.ativada) { alert(`Faltam ${resultado.faltam} unidade(s) pra ativar essa promoção. Aumente a quantidade ou remova a promoção pra adicionar sem desconto.`); return; }
+      onAdd({ id: uid(), produto_variante_id: varianteId, quantidade: qtd, unidade, preco_pago: resultado.precoEfetivo, preco_normal: preco, promocao: promocaoAtual, subtotal: resultado.precoEfetivo * qtd, comprado: false });
+      return;
+    }
+    onAdd({ id: uid(), produto_variante_id: varianteId, quantidade: qtd, unidade, preco_pago: preco, preco_normal: null, promocao: null, subtotal: preco != null ? preco * qtd : null, comprado: false });
   }
 
   const historicoGeral = varianteId ? calcHistorico(sessoes, varianteId, unidade) : null;
   const iaCache = varianteId ? ultimaEstimativa(precoIaCache, varianteId) : null;
   const precoNum = parsePrecoInteligente(precoTexto);
+  const mediaRefParaPromo = historicoGeral?.media ?? iaCache?.preco_medio_estimado ?? null;
 
   return (
     <div className="fixed inset-0 bg-white z-50 flex flex-col max-w-md mx-auto">
@@ -6159,7 +6334,7 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
             </div>
 
             <div>
-              <div className="text-xs font-semibold text-stone-400 uppercase mb-2">Preço que você vai pagar aqui (opcional)</div>
+              <div className="text-xs font-semibold text-stone-400 uppercase mb-2">{promocaoAtual ? "Preço normal (sem desconto)" : "Preço que você vai pagar aqui (opcional)"}</div>
               <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5">
                 <span className="text-stone-400 font-mono2">R$</span>
                 <input value={precoTexto} onChange={(e) => setPrecoTexto(sanitizarEntradaPreco(e.target.value))} placeholder="ex: 350 = R$3,50" className="font-mono2 font-bold text-lg flex-1 outline-none" aria-label="Preço" />
@@ -6168,6 +6343,8 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
                 {precoNum != null ? <>= {brl(precoNum)}{variante.tamanho_quantidade && unidade === "un" ? ` · ${brl(precoNum / variante.tamanho_quantidade)}/${variante.tamanho_unidade}` : ""}</> : "digite sem vírgula (350 = R$3,50) ou com vírgula pra valor exato (120,00)"}
               </div>
             </div>
+
+            <SecaoPromocao precoNormalNum={precoNum} quantidade={numDe(quantidade) || 1} unidade={unidade} mediaRef={mediaRefParaPromo} valorInicial={null} onMudar={setPromocaoAtual} />
           </div>
           <div className="p-4 border-t border-stone-200 shrink-0"><button onClick={confirmarAdicionar} className="w-full bg-emerald-700 text-white font-semibold py-3 rounded-xl tap-target">Adicionar à lista</button></div>
         </>
@@ -6230,6 +6407,85 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
 /* =========================================================
    MODAL: PEQUENO EDITOR DO ITEM
 ========================================================= */
+/* Seção 31: componente único de promoção, reutilizado no editor pequeno E no Adicionar Item.
+   Três tipos: % com mínimo, leve/pague, e bloco (ex: "1 é 8, 2 é 15" — comum em hortifrúti).
+   Mostra também um indicador comparando o preço promocional com a média histórica REAL do item —
+   pra não confiar cegamente que "promoção = bom negócio" (pedido do usuário). */
+function SecaoPromocao({ precoNormalNum, quantidade, unidade, mediaRef, valorInicial, onMudar }) {
+  const [promoAtiva, setPromoAtiva] = useState(!!valorInicial);
+  const [tipoPromo, setTipoPromo] = useState(valorInicial?.tipo || "desconto_percentual");
+  const [percentualTexto, setPercentualTexto] = useState(valorInicial?.percentual != null ? String(valorInicial.percentual) : "");
+  const [qtdMinimaTexto, setQtdMinimaTexto] = useState(valorInicial?.quantidade_minima != null ? String(valorInicial.quantidade_minima) : "3");
+  const [leveTexto, setLeveTexto] = useState(valorInicial?.leve != null ? String(valorInicial.leve) : "4");
+  const [pagueTexto, setPagueTexto] = useState(valorInicial?.pague != null ? String(valorInicial.pague) : "3");
+  const [qtdBlocoTexto, setQtdBlocoTexto] = useState(valorInicial?.quantidade_bloco != null ? String(valorInicial.quantidade_bloco) : "2");
+  const [precoBlocoTexto, setPrecoBlocoTexto] = useState(valorInicial?.preco_bloco != null ? formatarValorCampo(valorInicial.preco_bloco) : "");
+
+  const promoAtual = tipoPromo === "desconto_percentual"
+    ? { tipo: "desconto_percentual", percentual: numDe(percentualTexto) || 0, quantidade_minima: numDe(qtdMinimaTexto) || 1 }
+    : tipoPromo === "leve_pague"
+    ? { tipo: "leve_pague", leve: numDe(leveTexto) || 1, pague: numDe(pagueTexto) || 1 }
+    : { tipo: "bloco", quantidade_bloco: numDe(qtdBlocoTexto) || 1, preco_bloco: parsePrecoInteligente(precoBlocoTexto) };
+
+  useEffect(() => { onMudar(promoAtiva ? promoAtual : null); },
+    [promoAtiva, tipoPromo, percentualTexto, qtdMinimaTexto, leveTexto, pagueTexto, qtdBlocoTexto, precoBlocoTexto]);
+
+  const resultadoPromo = promoAtiva && precoNormalNum != null ? calcularPrecoComPromocao(precoNormalNum, quantidade, promoAtual) : null;
+  const indicadorVsHistorico = resultadoPromo?.ativada && mediaRef != null ? calcIndicador(resultadoPromo.precoEfetivo, mediaRef) : null;
+
+  return (
+    <div>
+      <button onClick={() => setPromoAtiva(!promoAtiva)} className={`w-full text-left text-sm font-semibold border rounded-lg p-2.5 tap-target ${promoAtiva ? "bg-amber-50 border-amber-400 text-amber-700" : "border-stone-300 text-stone-600"}`}>
+        🏷️ {promoAtiva ? "Promoção ativada — toque pra remover" : "Tem promoção nesse item?"}
+      </button>
+      {promoAtiva && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2 mt-2">
+          <div className="flex gap-2 flex-wrap">
+            <Chip selected={tipoPromo === "desconto_percentual"} onClick={() => setTipoPromo("desconto_percentual")}>% de desconto</Chip>
+            <Chip selected={tipoPromo === "leve_pague"} onClick={() => setTipoPromo("leve_pague")}>Leve/Pague</Chip>
+            <Chip selected={tipoPromo === "bloco"} onClick={() => setTipoPromo("bloco")}>Preço em bloco</Chip>
+          </div>
+          {tipoPromo === "desconto_percentual" && (
+            <div className="grid grid-cols-2 gap-2">
+              <div><label className="text-xs text-stone-500">Desconto (%)</label><input value={percentualTexto} onChange={(e) => setPercentualTexto(e.target.value.replace(/\D/g, ""))} className="w-full border border-stone-300 rounded-lg p-2 font-mono2" placeholder="30" aria-label="Percentual de desconto" /></div>
+              <div><label className="text-xs text-stone-500">A partir de quantas un.</label><input value={qtdMinimaTexto} onChange={(e) => setQtdMinimaTexto(e.target.value.replace(/\D/g, ""))} className="w-full border border-stone-300 rounded-lg p-2 font-mono2" placeholder="3" aria-label="Quantidade mínima" /></div>
+            </div>
+          )}
+          {tipoPromo === "leve_pague" && (
+            <div className="grid grid-cols-2 gap-2">
+              <div><label className="text-xs text-stone-500">Leve</label><input value={leveTexto} onChange={(e) => setLeveTexto(e.target.value.replace(/\D/g, ""))} className="w-full border border-stone-300 rounded-lg p-2 font-mono2" placeholder="4" aria-label="Leve quantas unidades" /></div>
+              <div><label className="text-xs text-stone-500">Pague</label><input value={pagueTexto} onChange={(e) => setPagueTexto(e.target.value.replace(/\D/g, ""))} className="w-full border border-stone-300 rounded-lg p-2 font-mono2" placeholder="3" aria-label="Pague quantas unidades" /></div>
+            </div>
+          )}
+          {tipoPromo === "bloco" && (
+            <div className="grid grid-cols-2 gap-2">
+              <div><label className="text-xs text-stone-500">Quantas unidades no bloco</label><input value={qtdBlocoTexto} onChange={(e) => setQtdBlocoTexto(e.target.value.replace(/\D/g, ""))} className="w-full border border-stone-300 rounded-lg p-2 font-mono2" placeholder="2" aria-label="Quantidade do bloco" /></div>
+              <div><label className="text-xs text-stone-500">Preço do bloco (R$)</label><input value={precoBlocoTexto} onChange={(e) => setPrecoBlocoTexto(sanitizarEntradaPreco(e.target.value))} className="w-full border border-stone-300 rounded-lg p-2 font-mono2" placeholder="15,00" aria-label="Preço do bloco" /></div>
+            </div>
+          )}
+          {precoNormalNum == null && <p className="text-xs text-stone-500">Digite o preço normal acima pra ver o cálculo.</p>}
+          {precoNormalNum != null && resultadoPromo && !resultadoPromo.ativada && (
+            <p className="text-xs text-red-600 font-semibold">Faltam {resultadoPromo.faltam} unidade(s) pra ativar — promoção ainda não aplicada.</p>
+          )}
+          {precoNormalNum != null && resultadoPromo && resultadoPromo.ativada && (
+            <div className="text-xs text-emerald-700 font-semibold bg-emerald-50 rounded-lg p-2">
+              ✓ Ativada: {brl(resultadoPromo.precoEfetivo)}/{unidade} · total {brl(resultadoPromo.precoEfetivo * quantidade)} · economia de {brl((precoNormalNum - resultadoPromo.precoEfetivo) * quantidade)}
+              {tipoPromo === "bloco" && resultadoPromo.faltam > 0 && <div className="text-stone-500 font-normal mt-1">Faltam {resultadoPromo.faltam} unidade(s) pra completar mais um bloco.</div>}
+            </div>
+          )}
+          {indicadorVsHistorico && (
+            <div className={`text-xs font-semibold rounded-lg p-2 ${indicadorVsHistorico === "bom" ? "bg-emerald-100 text-emerald-800" : indicadorVsHistorico === "caro" ? "bg-red-100 text-red-700" : "bg-stone-100 text-stone-600"}`}>
+              {indicadorVsHistorico === "bom" && "✓ Vale a pena — fica abaixo da média histórica desse item"}
+              {indicadorVsHistorico === "caro" && "⚠️ Mesmo com a promoção, ainda fica acima da média histórica"}
+              {indicadorVsHistorico === "normal" && "≈ Fica dentro do preço que esse item costuma ter, com ou sem promoção"}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ModalEditarItem({ item, catalogo, setCatalogo, sessoes, sessaoAtiva, precoIaCache, setPrecoIaCache, apiKey, onChange, onRemoverConfirmado, onClose }) {
   useFecharComVoltar(true, onClose);
   const variante = by(catalogo.variantes, item.produto_variante_id);
@@ -6242,12 +6498,7 @@ function ModalEditarItem({ item, catalogo, setCatalogo, sessoes, sessaoAtiva, pr
   const [precoTexto, setPrecoTexto] = useState(item.preco_normal != null ? formatarValorCampo(item.preco_normal) : (item.preco_pago != null ? formatarValorCampo(item.preco_pago) : ""));
   const [buscandoIa, setBuscandoIa] = useState(false);
   const [alertaOutlier, setAlertaOutlier] = useState(false);
-  const [promoAtiva, setPromoAtiva] = useState(!!item.promocao);
-  const [tipoPromo, setTipoPromo] = useState(item.promocao?.tipo || "desconto_percentual");
-  const [percentualTexto, setPercentualTexto] = useState(item.promocao?.percentual != null ? String(item.promocao.percentual) : "");
-  const [qtdMinimaTexto, setQtdMinimaTexto] = useState(item.promocao?.quantidade_minima != null ? String(item.promocao.quantidade_minima) : "3");
-  const [leveTexto, setLeveTexto] = useState(item.promocao?.leve != null ? String(item.promocao.leve) : "4");
-  const [pagueTexto, setPagueTexto] = useState(item.promocao?.pague != null ? String(item.promocao.pague) : "3");
+  const [promocaoAtual, setPromocaoAtual] = useState(item.promocao || null);
 
   const mediaRecente = calcMediaRecente(sessoes, item.produto_variante_id, unidade, sessaoAtiva.mercado_id);
   const mediaGeral = calcHistorico(sessoes, item.produto_variante_id, unidade)?.media;
@@ -6255,13 +6506,9 @@ function ModalEditarItem({ item, catalogo, setCatalogo, sessoes, sessaoAtiva, pr
   const iaCache = ultimaEstimativa(precoIaCache, item.produto_variante_id);
   const referencia = referenciaComFonte(mediaRecente, mediaGeral, referenciaCruzada, iaCache?.preco_medio_estimado);
   const mediaRef = referencia?.valor ?? null;
-  const precoNum = parsePrecoInteligente(precoTexto); // quando promoAtiva, isso é o preço NORMAL (sem desconto)
+  const precoNum = parsePrecoInteligente(precoTexto); // quando tem promocaoAtual, isso é o preço NORMAL (sem desconto)
   const qtdNum = numDe(qtdTexto) || item.quantidade;
-
-  const promoAtual = tipoPromo === "desconto_percentual"
-    ? { tipo: "desconto_percentual", percentual: numDe(percentualTexto) || 0, quantidade_minima: numDe(qtdMinimaTexto) || 1 }
-    : { tipo: "leve_pague", leve: numDe(leveTexto) || 1, pague: numDe(pagueTexto) || 1 };
-  const resultadoPromo = promoAtiva && precoNum != null ? calcularPrecoComPromocao(precoNum, qtdNum, promoAtual) : null;
+  const resultadoPromo = promocaoAtual && precoNum != null ? calcularPrecoComPromocao(precoNum, qtdNum, promocaoAtual) : null;
 
   async function atualizarIA() {
     if (!apiKey) { alert("Adicione sua chave de API da Anthropic em Configurações."); return; }
@@ -6278,16 +6525,16 @@ function ModalEditarItem({ item, catalogo, setCatalogo, sessoes, sessaoAtiva, pr
       setAlertaOutlier(true);
       return;
     }
-    if (promoAtiva && resultadoPromo && !resultadoPromo.ativada) {
+    if (promocaoAtual && resultadoPromo && !resultadoPromo.ativada) {
       alert(`Faltam ${resultadoPromo.faltam} unidade(s) pra ativar essa promoção. Aumente a quantidade ou desative a promoção pra salvar sem desconto.`);
       return;
     }
-    const precoEfetivo = promoAtiva && resultadoPromo ? resultadoPromo.precoEfetivo : precoNum;
+    const precoEfetivo = promocaoAtual && resultadoPromo ? resultadoPromo.precoEfetivo : precoNum;
     onChange({
       quantidade: qtdNum, unidade,
       preco_pago: precoEfetivo,
-      preco_normal: promoAtiva ? precoNum : null,
-      promocao: promoAtiva ? promoAtual : null,
+      preco_normal: promocaoAtual ? precoNum : null,
+      promocao: promocaoAtual,
       subtotal: precoEfetivo != null ? precoEfetivo * qtdNum : null,
     });
     onClose();
@@ -6345,47 +6592,18 @@ function ModalEditarItem({ item, catalogo, setCatalogo, sessoes, sessaoAtiva, pr
         )}
         {!(variante?.tamanho_quantidade && unidade === "un") && <div className="mb-3" />}
 
-        <label className="text-xs font-semibold text-stone-500 uppercase">{promoAtiva ? `Preço normal (sem desconto), por ${unidade}` : `Preço (por ${unidade})`}</label>
+        <label className="text-xs font-semibold text-stone-500 uppercase">{promocaoAtual ? `Preço normal (sem desconto), por ${unidade}` : `Preço (por ${unidade})`}</label>
         <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5 mt-1">
           <span className="text-stone-400 font-mono2">R$</span>
           <input value={precoTexto} onChange={(e) => { setPrecoTexto(sanitizarEntradaPreco(e.target.value)); setAlertaOutlier(false); }} placeholder="ex: 350 = R$3,50" className="font-mono2 font-bold text-lg flex-1 outline-none" aria-label="Preço" />
         </div>
         <div className="text-xs text-stone-400 mt-1 mb-3">
-          {precoNum != null && !promoAtiva ? <>Subtotal: <b className="font-mono2">{brl(precoNum * qtdNum)}</b></> : !precoNum ? "digite sem vírgula (350=3,50) ou com vírgula pra valor exato (120,00)" : null}
+          {precoNum != null && !promocaoAtual ? <>Subtotal: <b className="font-mono2">{brl(precoNum * qtdNum)}</b></> : !precoNum ? "digite sem vírgula (350=3,50) ou com vírgula pra valor exato (120,00)" : null}
         </div>
 
-        <button onClick={() => setPromoAtiva(!promoAtiva)} className={`w-full text-left text-sm font-semibold border rounded-lg p-2.5 tap-target ${promoAtiva ? "bg-amber-50 border-amber-400 text-amber-700" : "border-stone-300 text-stone-600"}`}>
-          🏷️ {promoAtiva ? "Promoção ativada — toque pra remover" : "Tem promoção nesse item?"}
-        </button>
-
-        {promoAtiva && (
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2 mt-2 mb-3">
-            <div className="flex gap-2">
-              <Chip selected={tipoPromo === "desconto_percentual"} onClick={() => setTipoPromo("desconto_percentual")}>% de desconto</Chip>
-              <Chip selected={tipoPromo === "leve_pague"} onClick={() => setTipoPromo("leve_pague")}>Leve/Pague</Chip>
-            </div>
-            {tipoPromo === "desconto_percentual" ? (
-              <div className="grid grid-cols-2 gap-2">
-                <div><label className="text-xs text-stone-500">Desconto (%)</label><input value={percentualTexto} onChange={(e) => setPercentualTexto(e.target.value.replace(/\D/g, ""))} className="w-full border border-stone-300 rounded-lg p-2 font-mono2" placeholder="30" aria-label="Percentual de desconto" /></div>
-                <div><label className="text-xs text-stone-500">A partir de quantas un.</label><input value={qtdMinimaTexto} onChange={(e) => setQtdMinimaTexto(e.target.value.replace(/\D/g, ""))} className="w-full border border-stone-300 rounded-lg p-2 font-mono2" placeholder="3" aria-label="Quantidade mínima" /></div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-2">
-                <div><label className="text-xs text-stone-500">Leve</label><input value={leveTexto} onChange={(e) => setLeveTexto(e.target.value.replace(/\D/g, ""))} className="w-full border border-stone-300 rounded-lg p-2 font-mono2" placeholder="4" aria-label="Leve quantas unidades" /></div>
-                <div><label className="text-xs text-stone-500">Pague</label><input value={pagueTexto} onChange={(e) => setPagueTexto(e.target.value.replace(/\D/g, ""))} className="w-full border border-stone-300 rounded-lg p-2 font-mono2" placeholder="3" aria-label="Pague quantas unidades" /></div>
-              </div>
-            )}
-            {precoNum == null && <p className="text-xs text-stone-500">Digite o preço normal acima pra ver o cálculo.</p>}
-            {precoNum != null && resultadoPromo && !resultadoPromo.ativada && (
-              <p className="text-xs text-red-600 font-semibold">Faltam {resultadoPromo.faltam} unidade(s) pra ativar — promoção ainda não aplicada.</p>
-            )}
-            {precoNum != null && resultadoPromo && resultadoPromo.ativada && (
-              <div className="text-xs text-emerald-700 font-semibold bg-emerald-50 rounded-lg p-2">
-                ✓ Ativada: {brl(resultadoPromo.precoEfetivo)}/{unidade} · total {brl(resultadoPromo.precoEfetivo * qtdNum)} · economia de {brl((precoNum - resultadoPromo.precoEfetivo) * qtdNum)}
-              </div>
-            )}
-          </div>
-        )}
+        <div className="mb-3">
+          <SecaoPromocao precoNormalNum={precoNum} quantidade={qtdNum} unidade={unidade} mediaRef={mediaRef} valorInicial={item.promocao} onMudar={setPromocaoAtual} />
+        </div>
 
         {alertaOutlier && (
           <div className="bg-amber-50 text-amber-700 text-xs p-3 rounded-lg mb-3">
@@ -7384,10 +7602,12 @@ function App() {
   const [erroSalvamento, setErroSalvamento] = useState(false);
 
   useEffect(() => {
-    const d = loadAll();
-    setCatalogo(d.catalogo); setSessoes(d.sessoes); setPrecoIaCache(d.precoIaCache); setApiKeyState(d.apiKey); setLastBackup(d.lastBackup);
-    setErroCarregamento(!!d.houveErroCarregamento);
-    setLoading(false);
+    Promise.resolve(window.__promessaVerificacaoAtualizacao).catch(() => {}).then(() => {
+      const d = loadAll();
+      setCatalogo(d.catalogo); setSessoes(d.sessoes); setPrecoIaCache(d.precoIaCache); setApiKeyState(d.apiKey); setLastBackup(d.lastBackup);
+      setErroCarregamento(!!d.houveErroCarregamento);
+      setLoading(false);
+    });
   }, []);
 
   useEffect(() => { if (!loading && catalogo) { const ok = persist("nc_catalogo", catalogo); if (!ok) setErroSalvamento(true); } }, [catalogo, loading]);
@@ -7458,39 +7678,6 @@ function App() {
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
-</script>
-
-<script>
-  // Registro do service worker + auto-atualização: toda vez que o app abre,
-  // checa se tem versão nova publicada e, se tiver, recarrega sozinho pra buscá-la.
-  if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./service-worker.js").then((reg) => {
-        reg.update(); // força checar por versão nova a cada abertura do app
-
-        // Se a página já estiver aberta e uma atualização acontecer no fundo,
-        // também verifica de tempos em tempos (útil pra quem deixa o app aberto)
-        setInterval(() => reg.update(), 60 * 1000);
-
-        reg.addEventListener("updatefound", () => {
-          const novoSW = reg.installing;
-          if (!novoSW) return;
-          novoSW.addEventListener("statechange", () => {
-            if (novoSW.state === "installed" && navigator.serviceWorker.controller) {
-              novoSW.postMessage("SKIP_WAITING");
-            }
-          });
-        });
-
-        let jaRecarregou = false;
-        navigator.serviceWorker.addEventListener("controllerchange", () => {
-          if (jaRecarregou) return;
-          jaRecarregou = true;
-          window.location.reload();
-        });
-      }).catch((e) => console.warn("Falha ao registrar service worker:", e));
-    });
-  }
 </script>
 </body>
 </html>

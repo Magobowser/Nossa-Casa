@@ -64,7 +64,7 @@
 <div id="root"></div>
 
 <script>
-  window.VERSAO_APP = "2026.08.19-6"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
+  window.VERSAO_APP = "2026.08.19-7"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
 </script>
 
 <script>
@@ -493,6 +493,28 @@ function Hub({ onEntrar }) {
   );
 }
 
+/* LimiteDeErro — rede de segurança: sem isso, qualquer erro de JavaScript num módulo derruba a
+   árvore de React inteira e vira tela branca, sem nenhuma pista de por quê. Precisa ser uma
+   classe (React não tem hook equivalente a componentDidCatch/getDerivedStateFromError ainda). */
+class LimiteDeErro extends React.Component {
+  constructor(props) { super(props); this.state = { erro: null }; }
+  static getDerivedStateFromError(erro) { return { erro }; }
+  componentDidCatch(erro, info) { console.error("Erro capturado pelo LimiteDeErro:", erro, info); }
+  render() {
+    if (this.state.erro) {
+      return (
+        <div style={{ padding: 20, fontFamily: "monospace", background: "#fff", color: "#111", height: "100vh", overflowY: "auto", boxSizing: "border-box" }}>
+          <h2 style={{ color: "#b91c1c", marginBottom: 8 }}>⚠️ Algo quebrou aqui</h2>
+          <p style={{ fontWeight: "bold", marginBottom: 12 }}>{String(this.state.erro.message || this.state.erro)}</p>
+          <pre style={{ fontSize: 11, whiteSpace: "pre-wrap", background: "#f5f5f4", padding: 10, borderRadius: 8 }}>{this.state.erro.stack}</pre>
+          <button onClick={() => window.location.reload()} style={{ marginTop: 16, padding: "10px 16px", background: "#065f46", color: "#fff", border: "none", borderRadius: 8, fontWeight: "bold" }}>Recarregar</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 /* App — app-shell enxuto (seção 32 do mapa). Só cuida de: esperar a checagem de atualização,
    guardar a apiKey (compartilhada entre módulos), e decidir se mostra o Hub ou um módulo.
    Cada módulo (AppMercado, e futuramente AppFinancas) cuida do próprio carregamento de dado
@@ -519,9 +541,9 @@ function App() {
     </div>
   );
 
-  if (abaPrincipal === "mercado") return <AppMercado apiKey={apiKey} setApiKey={setApiKey} onVoltarHub={() => setAbaPrincipal("hub")} />;
+  if (abaPrincipal === "mercado") return <LimiteDeErro><AppMercado apiKey={apiKey} setApiKey={setApiKey} onVoltarHub={() => setAbaPrincipal("hub")} /></LimiteDeErro>;
 
-  if (abaPrincipal === "financas") return <AppFinancas apiKey={apiKey} setApiKey={setApiKey} onVoltarHub={() => setAbaPrincipal("hub")} />;
+  if (abaPrincipal === "financas") return <LimiteDeErro><AppFinancas apiKey={apiKey} setApiKey={setApiKey} onVoltarHub={() => setAbaPrincipal("hub")} /></LimiteDeErro>;
 
   return <Hub onEntrar={setAbaPrincipal} />;
 }

@@ -64,18 +64,42 @@
 <div id="root"></div>
 
 <script>
-  /* Seção 31 (item 10): a tela de carregamento do app espera essa checagem terminar (ou 2s,
-     o que vier primeiro) ANTES de mostrar a lista — assim, se tiver versão nova, o recarregamento
-     automático acontece durante o "Carregando…", não no meio do uso, de surpresa. */
+  window.VERSAO_APP = "2026.08.18-3"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
+</script>
+
+<script>
+  /* Busca ATIVA de verdade: busca o PRÓPRIO index.html direto do servidor, com cache totalmente
+     desligado, e lê a versão de dentro dele — sem precisar de nenhum arquivo separado, só o
+     index.html mesmo (que já é o único que muda a cada entrega). Se a versão de lá for diferente
+     da que está rodando agora, recarrega sozinho na hora — não depende só do mecanismo do service
+     worker (mais indireto, e que já causou confusão antes). A tela de carregamento espera essa
+     checagem (ou 2,5s, o que vier primeiro) antes de mostrar a lista, e ela roda de novo a cada
+     60s enquanto o app fica aberto. */
   window.__promessaVerificacaoAtualizacao = new Promise((resolve) => {
     let resolvido = false;
     function resolverUmaVez() { if (!resolvido) { resolvido = true; resolve(); } }
-    setTimeout(resolverUmaVez, 2000); // nunca trava o carregamento por mais que isso
+    setTimeout(resolverUmaVez, 2500);
 
-    if (!("serviceWorker" in navigator)) { resolverUmaVez(); return; }
+    async function buscarVersaoAtiva() {
+      try {
+        const resposta = await fetch("./index.html?t=" + Date.now(), { cache: "no-store" });
+        const texto = await resposta.text();
+        const encontrado = texto.match(/VERSAO_APP\s*=\s*"([^"]+)"/);
+        const versaoServidor = encontrado ? encontrado[1] : null;
+        if (versaoServidor && versaoServidor !== window.VERSAO_APP) {
+          window.location.reload(); // versão nova de verdade no servidor — recarrega na hora
+          return; // nunca resolve — a página está saindo daqui mesmo
+        }
+      } catch (e) { /* rede falhou ou offline — segue sem travar o app */ }
+      resolverUmaVez();
+    }
+    buscarVersaoAtiva();
+    setInterval(buscarVersaoAtiva, 60 * 1000);
+
+    if (!("serviceWorker" in navigator)) return;
     navigator.serviceWorker.register("./service-worker.js", { updateViaCache: "none" }).then((reg) => {
-      reg.update().then(resolverUmaVez).catch(resolverUmaVez);
-      setInterval(() => reg.update(), 60 * 1000); // continua checando enquanto o app fica aberto
+      reg.update();
+      setInterval(() => reg.update(), 60 * 1000);
 
       reg.addEventListener("updatefound", () => {
         const novoSW = reg.installing;
@@ -92,16 +116,16 @@
         jaRecarregou = true;
         window.location.reload();
       });
-    }).catch(() => resolverUmaVez());
+    }).catch(() => {});
   });
 </script>
 
 <script type="text/babel" data-presets="react,env">
 const { useState, useEffect, useRef } = React;
 
-/* Versão do app — atualizar manualmente a cada entrega, formato ano.mês.dia-sequência.
-   Mostrada na tela de carregamento e em Config > Sobre, pra confirmar que uma atualização chegou. */
-const VERSAO_APP = "2026.08.18-1";
+/* Versão do app — fonte única é window.VERSAO_APP, definida no script antes deste. Só precisa
+   mudar em um lugar (aquele script) a cada entrega — não existe mais arquivo separado de versão. */
+const VERSAO_APP = window.VERSAO_APP || "?";
 
 /* =========================================================
    HELPERS GERAIS
@@ -7476,10 +7500,32 @@ function TelaHistorico({ catalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAu
 function TelaConfig({ catalogo, setCatalogo, sessoes, setSessoes, setPrecoIaCache, apiKey, setApiKey, lastBackup, setLastBackup }) {
   const [apiKeyTexto, setApiKeyTexto] = useState(apiKey || "");
   const [confirmar, setConfirmar] = useState(null);
+  const [buscandoAtualizacao, setBuscandoAtualizacao] = useState(false);
+  const [resultadoAtualizacao, setResultadoAtualizacao] = useState(null);
   const diasSemBackup = lastBackup ? Math.floor((Date.now() - new Date(lastBackup).getTime()) / 86400000) : null;
   function marcarBackupFeito() { const agora = new Date().toISOString(); localStorage.setItem("nc_lastBackup", agora); setLastBackup(agora); }
   async function exportarCatalogo(compartilhar) { await baixarOuCompartilharJSON(catalogo, "catalogo", compartilhar); }
   async function exportarBackup(compartilhar) { await baixarOuCompartilharJSON({ ...catalogo, sessoes }, "backup-nossa-casa", compartilhar); marcarBackupFeito(); }
+  async function buscarAtualizacaoManual() {
+    setBuscandoAtualizacao(true);
+    setResultadoAtualizacao(null);
+    try {
+      const resposta = await fetch("./index.html?t=" + Date.now(), { cache: "no-store" });
+      const texto = await resposta.text();
+      const encontrado = texto.match(/VERSAO_APP\s*=\s*"([^"]+)"/);
+      const versaoServidor = encontrado ? encontrado[1] : null;
+      if (versaoServidor && versaoServidor !== VERSAO_APP) {
+        setResultadoAtualizacao("Encontrou a versão " + versaoServidor + " — atualizando e recarregando...");
+        setTimeout(() => window.location.reload(), 600);
+        return;
+      }
+      setBuscandoAtualizacao(false);
+      setResultadoAtualizacao("Você já está na versão mais recente.");
+    } catch (e) {
+      setBuscandoAtualizacao(false);
+      setResultadoAtualizacao("Não consegui verificar agora — confira sua internet.");
+    }
+  }
   function importar(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -7552,7 +7598,11 @@ function TelaConfig({ catalogo, setCatalogo, sessoes, setSessoes, setPrecoIaCach
 
       <div className="bg-white border border-stone-200 rounded-xl p-4">
         <div className="font-semibold text-stone-700 mb-1">Sobre</div>
-        <div className="text-xs text-stone-500 font-mono2">🧺 Nossa Casa — versão {VERSAO_APP}</div>
+        <div className="text-xs text-stone-500 font-mono2 mb-2">🧺 Nossa Casa — versão {VERSAO_APP}</div>
+        <button onClick={buscarAtualizacaoManual} disabled={buscandoAtualizacao} className="text-xs text-emerald-700 font-semibold border border-emerald-700 rounded-lg px-3 py-2 tap-target">
+          {buscandoAtualizacao ? "Buscando…" : "🔄 Buscar atualização agora"}
+        </button>
+        {resultadoAtualizacao && <p className="text-xs text-stone-500 mt-2">{resultadoAtualizacao}</p>}
       </div>
 
       <button onClick={apagarTudo} className="text-xs text-red-400 underline block mx-auto pt-2 tap-target">Apagar todos os dados e recomeçar</button>
@@ -7629,7 +7679,8 @@ function App() {
 
   if (loading || !catalogo) return (
     <div className="h-screen flex flex-col items-center justify-center bg-stone-100 text-stone-400 gap-2">
-      <div>Carregando…</div>
+      <div className="text-2xl">🧺</div>
+      <div>Verificando atualizações…</div>
       <div className="text-xs font-mono2 text-stone-300">v{VERSAO_APP}</div>
     </div>
   );

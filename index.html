@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Nossa Casa</title>
+<title>Nossa Casa — Mercado</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2E6B4E">
 <link rel="icon" href="icon-192.png">
@@ -64,7 +64,7 @@
 <div id="root"></div>
 
 <script>
-  window.VERSAO_APP = "2026.08.18-4"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
+  window.VERSAO_APP = "2026.08.19-5"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
 </script>
 
 <script>
@@ -470,7 +470,7 @@ function ModalConfirmar({ titulo, mensagem, textoConfirmar = "Confirmar", severo
 function Hub({ onEntrar }) {
   const modulos = [
     { id: "mercado", nome: "Mercado", desc: "Lista, preços, histórico de compras", icone: "🛒", pronto: true },
-    { id: "financas", nome: "Finanças", desc: "Em construção", icone: "💰", pronto: false },
+    { id: "financas", nome: "Finanças", desc: "Receitas, despesas e saldo", icone: "💰", pronto: true },
   ];
   return (
     <div className="h-screen flex flex-col bg-stone-100 max-w-md mx-auto">
@@ -521,18 +521,13 @@ function App() {
 
   if (abaPrincipal === "mercado") return <AppMercado apiKey={apiKey} setApiKey={setApiKey} onVoltarHub={() => setAbaPrincipal("hub")} />;
 
-  if (abaPrincipal === "financas") return (
-    <div className="h-screen flex flex-col items-center justify-center bg-stone-100 text-stone-400 gap-3 p-6 text-center max-w-md mx-auto">
-      <div className="text-4xl">💰</div>
-      <div>Finanças ainda está em construção.</div>
-      <button onClick={() => setAbaPrincipal("hub")} className="text-emerald-700 font-semibold underline tap-target">Voltar ao início</button>
-    </div>
-  );
+  if (abaPrincipal === "financas") return <AppFinancas apiKey={apiKey} setApiKey={setApiKey} onVoltarHub={() => setAbaPrincipal("hub")} />;
 
   return <Hub onEntrar={setAbaPrincipal} />;
 }
 </script>
 <script type="text/babel" data-presets="react,env" src="./mercado.js"></script>
+<script type="text/babel" data-presets="react,env" src="./financas.js"></script>
 <script type="text/babel" data-presets="react,env">
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>

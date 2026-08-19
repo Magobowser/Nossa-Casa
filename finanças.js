@@ -134,6 +134,65 @@ function tamanhoAproximadoKB(strBase64) {
   return Math.round((strBase64 || "").length / 1024);
 }
 
+/* ---------- Fase 6: integração Mercado → Finanças ---------- */
+/* Definida aqui (não em mercado.js) porque Finanças é dona do formato de dado sendo escrito —
+   Mercado só avisa que uma compra terminou, não precisa saber a estrutura interna de lançamento
+   ou documento daqui. Funciona por escrita direta no localStorage (não por estado React
+   compartilhado) porque os dois módulos são telas irmãs, montadas uma de cada vez — nunca os
+   dois ao mesmo tempo — então não dá pra passar isso por prop/estado React entre eles.
+   upsert por origem_mercado_sessao_id: se a mesma sessão for finalizada de novo (ex: reaberta
+   pra correção e finalizada outra vez), ATUALIZA o valor em vez de duplicar o lançamento. */
+function integrarCompraMercado(sessaoMercado, nomeMercado) {
+  try {
+    const contasRaw = localStorage.getItem("fn_contas");
+    const contas = contasRaw ? JSON.parse(contasRaw) : [];
+    if (!contas.length) return; // Finanças ainda sem conta cadastrada — não dá pra lançar em lugar nenhum
+
+    const lancamentosRaw = localStorage.getItem("fn_lancamentos");
+    const lancamentos = lancamentosRaw ? JSON.parse(lancamentosRaw) : [];
+
+    const total = sessaoMercado.valor_nota_fiscal != null
+      ? sessaoMercado.valor_nota_fiscal
+      : sessaoMercado.itens.filter((i) => i.comprado).reduce((a, i) => a + (i.subtotal || 0), 0);
+    if (!total) return;
+
+    const existente = lancamentos.find((l) => l.origem_mercado_sessao_id === sessaoMercado.id);
+    if (existente) {
+      const atualizados = lancamentos.map((l) => (l.id === existente.id ? { ...l, valor: total } : l));
+      persist("fn_lancamentos", atualizados);
+      return;
+    }
+
+    const documentoId = sessaoMercado.nfe?.conferida ? uid() : null;
+    const novaDespesa = {
+      id: uid(), tipo: "despesa", descricao: "Compra no " + (nomeMercado || "mercado"),
+      categoria_id: "catfn_mercado", valor: total,
+      data: sessaoMercado.fechada_em || new Date().toISOString(),
+      fixa: false, recorrente: false, dia_recorrencia: null,
+      forma_pagamento: null, conta_id: contas[0].id, origem_fixo_id: null,
+      documento_id: documentoId, origem_mercado_sessao_id: sessaoMercado.id,
+    };
+    persist("fn_lancamentos", [...lancamentos, novaDespesa]);
+
+    /* Se teve NFe conferida, entra direto no arquivo de documentos de saída — mas como o
+       Mercado guarda só o resumo já interpretado da nota (não o arquivo XML original depois de
+       lido), o "documento" aqui é um resumo em texto, não o binário original. Recorte de escopo
+       consciente: preservar o XML bruto pediria mexer num fluxo do Mercado já testado, por um
+       ganho pequeno (o resumo já cobre a necessidade de "não subir de novo"). */
+    if (documentoId) {
+      const documentosRaw = localStorage.getItem("fn_documentos");
+      const documentos = documentosRaw ? JSON.parse(documentosRaw) : [];
+      const resumo = `Nota fiscal — ${sessaoMercado.nfe.nome_emit || nomeMercado || ""}\nChave de acesso: ${sessaoMercado.nfe.chave_acesso || "—"}\nTotal: ${brl(total)}\nItens conferidos: ${(sessaoMercado.nfe.itens || []).filter((i) => !i.ignorado).length}`;
+      const novoDocumento = {
+        id: documentoId, tipo: "saida", nome_arquivo: "NFe — " + (nomeMercado || "compra"),
+        arquivo_base64: "data:text/plain;charset=utf-8;base64," + btoa(unescape(encodeURIComponent(resumo))),
+        mime_type: "text/plain", data_upload: new Date().toISOString(), lancamento_id: novaDespesa.id,
+      };
+      persist("fn_documentos", [...documentos, novoDocumento]);
+    }
+  } catch (e) { console.error("Falha ao integrar compra do Mercado com Finanças:", e); }
+}
+
 function loadAllFinancas() {
   let categorias = null, contas = [], lancamentos = [], lancamentosFixos = [], lembretes5Dias = [], reflexoesMensais = {}, limiar5Dias = 100, metas = [], documentos = [];
   let houveErroCarregamento = false;
@@ -1121,7 +1180,14 @@ function TelaDocumentos({ documentos, setDocumentos, lancamentos, onSalvarLancam
   }
   function abrirArquivo(doc) {
     const w = window.open();
-    if (w) w.document.write(doc.mime_type === "application/pdf" ? `<iframe src="${doc.arquivo_base64}" style="width:100%;height:100%;border:none;"></iframe>` : `<img src="${doc.arquivo_base64}" style="max-width:100%;" />`);
+    if (!w) return;
+    if (doc.mime_type === "application/pdf") { w.document.write(`<iframe src="${doc.arquivo_base64}" style="width:100%;height:100%;border:none;"></iframe>`); return; }
+    if (doc.mime_type === "text/plain") {
+      const texto = decodeURIComponent(escape(atob(doc.arquivo_base64.split(",")[1])));
+      w.document.write(`<pre style="font-family:monospace;font-size:16px;padding:20px;white-space:pre-wrap;">${texto.replace(/</g, "&lt;")}</pre>`);
+      return;
+    }
+    w.document.write(`<img src="${doc.arquivo_base64}" style="max-width:100%;" />`);
   }
 
   return (
@@ -1144,7 +1210,7 @@ function TelaDocumentos({ documentos, setDocumentos, lancamentos, onSalvarLancam
           return (
             <div key={doc.id} className="bg-white border border-stone-200 rounded-xl p-3 flex items-center justify-between gap-2">
               <button onClick={() => abrirArquivo(doc)} className="flex items-center gap-2.5 min-w-0 text-left tap-target">
-                <span className="text-xl shrink-0">{doc.mime_type === "application/pdf" ? "📄" : "🖼️"}</span>
+                <span className="text-xl shrink-0">{doc.mime_type === "application/pdf" ? "📄" : doc.mime_type === "text/plain" ? "🧾" : "🖼️"}</span>
                 <div className="min-w-0">
                   <div className="font-semibold text-stone-800 truncate">{lancamentoVinculado?.descricao || doc.nome_arquivo}</div>
                   <div className="text-xs text-stone-400">{dataCurta(doc.data_upload)}{lancamentoVinculado ? " · " + brl(lancamentoVinculado.valor) : ""}</div>

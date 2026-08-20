@@ -267,6 +267,14 @@ function extrairChaveDoQrNfce(conteudoQr) {
   const qualquerSequencia = conteudoQr.match(/(\d{44})/);
   return qualquerSequencia ? qualquerSequencia[1] : null;
 }
+/* Seção 34 do mapa: em vez de abrir o portal cru da Sefaz (varia por estado, pode ter captcha,
+   navegação confusa), abre o Meu Danfe já com a chave preenchida — usuário só clica em baixar.
+   Formato do link é uma aposta razoável (não confirmado com a documentação oficial deles, que
+   bloqueia acesso automatizado) — por isso a chave também fica visível e copiável embaixo, pra
+   colar manualmente se o preenchimento automático não pegar. */
+function montarUrlMeuDanfe(chave) {
+  return `https://meudanfe.com.br/?chave=${chave}`;
+}
 /* Reserva pro scanner (seção 30): Safari/iOS não tem BarcodeDetector nativo — nenhum navegador
    no iPhone tem, é regra da Apple todo navegador ali usar o motor do Safari por baixo. A ZXing
    decodifica em JavaScript puro, funciona em qualquer navegador, carregada só sob demanda. */
@@ -5555,6 +5563,7 @@ function ModalNovaSessao({ catalogo, sessoes, setSessoes, onClose }) {
   useFecharComVoltar(true, onClose);
   const ativos = catalogo.mercados.filter((m) => m.ativo);
   const [escolhido, setEscolhido] = useState(null);
+  const [orcamentoTexto, setOrcamentoTexto] = useState("");
   const temUltima = escolhido && sessoes.some((s) => s.status === "fechada" && s.mercado_id === escolhido);
   function iniciar(mercadoId, repetir) {
     let itens = [];
@@ -5562,7 +5571,8 @@ function ModalNovaSessao({ catalogo, sessoes, setSessoes, onClose }) {
       const ultima = [...sessoes].filter((s) => s.status === "fechada" && s.mercado_id === mercadoId).sort((a, b) => new Date(b.data_hora) - new Date(a.data_hora))[0];
       if (ultima) itens = ultima.itens.map((it) => ({ id: uid(), produto_variante_id: it.produto_variante_id, quantidade: it.quantidade, unidade: it.unidade, preco_pago: null, subtotal: null, comprado: false }));
     }
-    setSessoes((ss) => [...ss, { id: uid(), mercado_id: mercadoId, data_hora: new Date().toISOString(), status: "em_andamento", origem: "manual", itens, valor_nota_fiscal: null, grafico_categorias: null }]);
+    const orcamento = parsePrecoInteligente(orcamentoTexto);
+    setSessoes((ss) => [...ss, { id: uid(), mercado_id: mercadoId, data_hora: new Date().toISOString(), status: "em_andamento", origem: "manual", itens, valor_nota_fiscal: null, grafico_categorias: null, orcamento: orcamento || null }]);
     onClose();
   }
   return (
@@ -5578,9 +5588,19 @@ function ModalNovaSessao({ catalogo, sessoes, setSessoes, onClose }) {
           ))}
         </div>
         {escolhido && (
-          <div className="space-y-2">
-            {temUltima && <button onClick={() => iniciar(escolhido, true)} className="w-full py-2.5 rounded-lg border border-emerald-700 text-emerald-700 font-semibold text-sm tap-target">Repetir última lista desse mercado</button>}
-            <button onClick={() => iniciar(escolhido, false)} className="w-full py-2.5 rounded-lg bg-emerald-700 text-white font-semibold text-sm tap-target">Começar lista em branco</button>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-semibold text-stone-500 uppercase">Orçamento pra essa compra (opcional)</label>
+              <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5 mt-1">
+                <span className="text-stone-400 font-mono2">R$</span>
+                <input value={orcamentoTexto} onChange={(e) => setOrcamentoTexto(sanitizarEntradaPreco(e.target.value))} placeholder="ex: 30000 = R$300,00" className="font-mono2 font-bold flex-1 outline-none" aria-label="Orçamento da compra" />
+              </div>
+              <p className="text-xs text-stone-400 mt-1">Dá pra definir ou mudar isso depois também, direto na Lista.</p>
+            </div>
+            <div className="space-y-2">
+              {temUltima && <button onClick={() => iniciar(escolhido, true)} className="w-full py-2.5 rounded-lg border border-emerald-700 text-emerald-700 font-semibold text-sm tap-target">Repetir última lista desse mercado</button>}
+              <button onClick={() => iniciar(escolhido, false)} className="w-full py-2.5 rounded-lg bg-emerald-700 text-white font-semibold text-sm tap-target">Começar lista em branco</button>
+            </div>
           </div>
         )}
       </div>
@@ -6515,8 +6535,12 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
                 {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
                 {chaveDoQr && (
                   <div className="bg-stone-50 rounded-lg p-2.5 mt-2 text-xs">
-                    <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. O XML não dá pra baixar direto por aqui — abre o portal da nota e baixa de lá, depois volta e anexa o arquivo.</div>
-                    <button onClick={() => window.open(chaveDoQr.url, "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir portal da nota →</button>
+                    <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. O XML não dá pra baixar direto por aqui — abre o Meu Danfe (já com a chave preenchida), baixa de lá, depois volta e anexa o arquivo.</div>
+                    <button onClick={() => window.open(montarUrlMeuDanfe(chaveDoQr.chave), "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir Meu Danfe →</button>
+                    <div className="flex items-center gap-2 mt-2 pt-2 border-t border-stone-200">
+                      <span className="font-mono2 text-[11px] text-stone-400 flex-1 truncate">{chaveDoQr.chave}</span>
+                      <button onClick={() => navigator.clipboard?.writeText(chaveDoQr.chave)} className="text-emerald-700 font-semibold shrink-0 tap-target">Copiar chave</button>
+                    </div>
                   </div>
                 )}
                 <p className="text-xs text-stone-400 mt-2">Sem QR nem XML? <button onClick={() => setLendoOcr(true)} className="text-emerald-700 font-semibold underline tap-target">Ler o total por foto</button>, ou preencha manualmente abaixo.</p>
@@ -6565,6 +6589,30 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
 /* =========================================================
    TELA: LISTA ATUAL
 ========================================================= */
+/* Seção 33.2 do mapa: editar o orçamento da compra a qualquer momento, não só na criação. */
+function ModalOrcamento({ orcamentoAtual, onSalvar, onFechar }) {
+  useFecharComVoltar(true, onFechar);
+  const [texto, setTexto] = useState(orcamentoAtual != null ? formatarValorCampo(orcamentoAtual) : "");
+  function salvar() { onSalvar(parsePrecoInteligente(texto)); onFechar(); }
+  function remover() { onSalvar(null); onFechar(); }
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[65]" onClick={onFechar}>
+      <div className="bg-white rounded-t-2xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-lg font-bold mb-3">🎯 Orçamento da compra</h3>
+        <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5 mb-4">
+          <span className="text-stone-400 font-mono2">R$</span>
+          <input value={texto} onChange={(e) => setTexto(sanitizarEntradaPreco(e.target.value))} placeholder="ex: 30000 = R$300,00" className="font-mono2 font-bold flex-1 outline-none" aria-label="Orçamento" autoFocus />
+        </div>
+        <div className="flex gap-2">
+          {orcamentoAtual != null && <button onClick={remover} className="py-2.5 px-4 rounded-lg border border-red-300 text-red-500 font-semibold text-sm tap-target">Remover</button>}
+          <button onClick={onFechar} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
+          <button onClick={salvar} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Salvar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, setPrecoIaCache, apiKey, onSessaoFinalizada, sessaoEmCorrecaoId }) {
   const ativas = sessoes.filter((s) => s.status === "em_andamento");
   const [sessaoAbertaId, setSessaoAbertaId] = useState(null);
@@ -6573,6 +6621,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
   const [modalPrevia, setModalPrevia] = useState(false);
   const [itemEditando, setItemEditando] = useState(null);
   const [confirmar, setConfirmar] = useState(null);
+  const [modalOrcamento, setModalOrcamento] = useState(false);
 
   useEffect(() => {
     if (sessaoEmCorrecaoId) { setSessaoAbertaId(sessaoEmCorrecaoId); return; }
@@ -6653,6 +6702,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
   const itensCarrinhoParaTotal = sessaoAtiva.itens.filter((it) => it.comprado);
   const totalAgora = itensCarrinhoParaTotal.reduce((a, it) => a + (it.subtotal || 0), 0);
   const totalPrev = totalPrevisto(sessaoAtiva.itens, catalogo, sessoes, sessaoAtiva.mercado_id);
+  const estourouOrcamento = sessaoAtiva.orcamento != null && totalAgora > sessaoAtiva.orcamento;
 
   const itensLista = sessaoAtiva.itens.filter((it) => !it.comprado);
   const itensCarrinho = sessaoAtiva.itens.filter((it) => it.comprado);
@@ -6704,6 +6754,10 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
             <button onClick={cancelarCompra} className="text-xs text-red-400 tap-target">{emCorrecao ? "Cancelar correção" : "Excluir"}</button>
           </div>
         </div>
+        <button onClick={() => setModalOrcamento(true)} className="w-full flex items-center justify-between text-xs px-1 mb-2 tap-target">
+          <span className="text-stone-400">🎯 {sessaoAtiva.orcamento != null ? `Orçamento: ${brl(sessaoAtiva.orcamento)}` : "Definir orçamento pra essa compra"}</span>
+          <span className="text-emerald-700 font-semibold">{sessaoAtiva.orcamento != null ? "editar" : "+"}</span>
+        </button>
         <div className="flex gap-3 text-xs text-stone-500 px-1">
           <span style={{ color: "var(--ink-black)" }}>● padrão</span><span style={{ color: "var(--ink-blue)" }}>● comprado</span><span style={{ color: "var(--ink-green)" }}>▼ bom preço</span><span style={{ color: "var(--ink-red)" }}>▲ caro</span>
         </div>
@@ -6750,7 +6804,11 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
 
       <div className="border-t border-stone-200 bg-white p-3 flex items-center justify-between shrink-0">
         <div className="flex gap-4">
-          <div><div className="text-xs text-stone-400 uppercase tracking-wide">No carrinho</div><div className="font-mono2 font-bold text-xl text-stone-800">{brl(totalAgora)}</div></div>
+          <div>
+            <div className="text-xs text-stone-400 uppercase tracking-wide">No carrinho</div>
+            <div className={`font-mono2 font-bold text-xl ${estourouOrcamento ? "text-red-600" : "text-stone-800"}`}>{brl(totalAgora)}</div>
+            {estourouOrcamento && <div className="text-[10px] text-red-500 font-semibold">estourou em {brl(totalAgora - sessaoAtiva.orcamento)}</div>}
+          </div>
           <div><div className="text-xs text-stone-400 uppercase tracking-wide">Previsto da lista</div><div className="font-mono2 font-semibold text-lg text-stone-500">{brl(totalPrev)}</div></div>
         </div>
         <button onClick={() => setModalPrevia(true)} className="bg-emerald-800 text-white font-semibold px-4 py-2.5 rounded-lg shrink-0 tap-target">Prévia →</button>
@@ -6768,6 +6826,9 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
           onChange={(patch) => atualizarItem(itemEditando.id, patch)} onRemoverConfirmado={pedirRemocao} onClose={() => setItemEditando(null)} />
       )}
       {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
+      {modalOrcamento && (
+        <ModalOrcamento orcamentoAtual={sessaoAtiva.orcamento} onSalvar={(valor) => setSessoes((ss) => ss.map((s) => (s.id === sessaoAtiva.id ? { ...s, orcamento: valor } : s)))} onFechar={() => setModalOrcamento(false)} />
+      )}
     </div>
   );
 }
@@ -6888,8 +6949,12 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
               {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
               {chaveDoQr && (
                 <div className="bg-stone-50 rounded-lg p-2.5 mt-2 text-xs">
-                  <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. Abre o portal da nota, baixa o XML de lá, e depois anexa o arquivo aqui.</div>
-                  <button onClick={() => window.open(chaveDoQr.url, "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir portal da nota →</button>
+                  <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. Abre o Meu Danfe (já com a chave preenchida), baixa o XML de lá, e depois anexa o arquivo aqui.</div>
+                  <button onClick={() => window.open(montarUrlMeuDanfe(chaveDoQr.chave), "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir Meu Danfe →</button>
+                  <div className="flex items-center gap-2 mt-2 pt-2 border-t border-stone-200">
+                    <span className="font-mono2 text-[11px] text-stone-400 flex-1 truncate">{chaveDoQr.chave}</span>
+                    <button onClick={() => navigator.clipboard?.writeText(chaveDoQr.chave)} className="text-emerald-700 font-semibold shrink-0 tap-target">Copiar chave</button>
+                  </div>
                 </div>
               )}
               <p className="text-xs text-stone-400 mt-2">Sem QR nem XML? <button onClick={() => setLendoOcr(true)} className="text-emerald-700 font-semibold underline tap-target">Ler o total por foto</button>.</p>

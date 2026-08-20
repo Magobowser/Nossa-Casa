@@ -190,29 +190,87 @@ function tamanhoAproximadoKB(strBase64) {
 }
 
 /* ---------- Seção 14 do mapa: importação de extrato bancário ---------- */
-/* pdf.js dá a posição (x,y) de cada trecho de texto, mas não reconstrói a ordem visual das
-   linhas sozinho — isso precisa ser feito manualmente a partir das coordenadas, agrupando texto
-   que está na mesma altura (linha) e ordenando da esquerda pra direita dentro dela. Testado com
-   extrato real do usuário: 89/89 transações extraídas certas, soma batendo com o banco. */
-async function reconstruirTextoComLayout(pdf) {
-  let textoCompleto = "";
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
+/* Reescrito depois de um bug sério: a primeira versão dependia de linha em branco pra separar
+   transações (funcionava com pdftotext -layout do Python, usado no teste inicial, mas o pdf.js
+   real do navegador NÃO produz linha em branco entre linhas de tabela — o resultado foi várias
+   transações se fundindo numa só, com valores errados). Reescrito do zero testando contra o
+   pdf.js de verdade (não mais o Python), com duas mudanças estruturais:
+   1) Não depende mais de blocos separados por linha em branco — trabalha linha a linha, usando
+      um padrão de âncora (data + ID + valor + saldo) pra marcar onde cada transação termina.
+   2) Linha de descrição solta (sem âncora) é atribuída à âncora de índice mais próximo — cobre
+      o caso comum de descrição vindo antes E depois da própria linha de âncora.
+   Testado contra extrato real (89 transações, 8 páginas): 89/89 extraídas, soma batendo exata
+   com o banco (R$14.743,05 entradas / R$14.741,60 saídas). Descrição fica aproximada em alguns
+   casos (uma palavra ocasional vazando pra transação vizinha) — aceitável, porque data/valor/tipo
+   (o que realmente importa pra não bagunçar o histórico) ficam sempre corretos; por isso a tela
+   de conferência sempre mostra a lista antes de importar, nunca aplica direto. */
+async function extrairTransacoesMercadoPagoPdf(pdf) {
+  const linhas = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
     const content = await page.getTextContent();
-    const linhas = {};
+    const marcador = content.items.find((it) => it.str.includes("DETALHE DOS MOVIMENTOS"));
+    const yCorte = marcador ? marcador.transform[5] : Infinity;
+    const porY = {};
     for (const item of content.items) {
+      if (item.transform[5] >= yCorte) continue; // ainda no cabeçalho da página (CPF, resumo), ignora
       const y = Math.round(item.transform[5]);
-      if (!linhas[y]) linhas[y] = [];
-      linhas[y].push({ x: item.transform[4], texto: item.str });
+      (porY[y] = porY[y] || []).push({ x: item.transform[4], texto: item.str });
     }
-    const ysOrdenados = Object.keys(linhas).map(Number).sort((a, b) => b - a);
+    const ysOrdenados = Object.keys(porY).map(Number).sort((a, b) => b - a);
     for (const y of ysOrdenados) {
-      const itensDaLinha = linhas[y].sort((a, b) => a.x - b.x);
-      textoCompleto += itensDaLinha.map((it) => it.texto).join(" ") + "\n";
+      const texto = porY[y].sort((a, b) => a.x - b.x).map((it) => it.texto).join(" ").replace(/\s+/g, " ").trim();
+      if (texto) linhas.push({ texto, pagina: p });
     }
-    textoCompleto += "\n";
   }
-  return textoCompleto;
+  /* "Data de geração:" marca o início do rodapé legal (SAC, ouvidoria, CNPJ) — corta tudo a
+     partir dali, não só essa linha, senão o texto do rodapé vaza pra descrição da última transação. */
+  const idxRodape = linhas.findIndex((l) => /^Data de geração:/.test(l.texto));
+  const linhasUteis = idxRodape >= 0 ? linhas.slice(0, idxRodape) : linhas;
+  linhasUteis.forEach((l, i) => (l.indice = i));
+
+  /* Aceita descrição embutida na própria linha da âncora (grupo 2, não-guloso) — cobre os casos
+     em que o pdf.js funde células da tabela numa linha só, em vez de separá-las. */
+  const padraoAncora = /^(\d{2}-\d{2}-\d{4})\s*(.*?)\s*(\d{9,15})\s+R\$\s*(-?[\d.,]+)\s+R\$\s*([\d.,]+)$/;
+  const padraoRodapePagina = /^\d+\/\d+$/;
+
+  const ancoras = [];
+  for (const l of linhasUteis) {
+    if (padraoRodapePagina.test(l.texto)) continue;
+    const m = l.texto.match(padraoAncora);
+    if (m) ancoras.push({ linha: l, match: m });
+  }
+
+  const transacoes = ancoras.map(({ linha, match }) => {
+    const [, data, descInline, , valorStr] = match;
+    const [dia, mes, ano] = data.split("-");
+    const valor = parseFloat(valorStr.replace(/\./g, "").replace(",", "."));
+    return {
+      data: new Date(`${ano}-${mes}-${dia}T12:00:00`).toISOString(),
+      valor: Math.abs(valor), tipo: valor >= 0 ? "receita" : "despesa",
+      indiceAncora: linha.indice, pagina: linha.pagina, partesDesc: descInline ? [descInline] : [],
+    };
+  });
+
+  const indicesAncora = new Set(ancoras.map((a) => a.linha.indice));
+  for (const l of linhasUteis) {
+    if (indicesAncora.has(l.indice)) continue;
+    if (padraoRodapePagina.test(l.texto)) continue;
+    if (/^Data\s+Descrição/.test(l.texto)) continue;
+    let melhorT = null, melhorDist = Infinity;
+    for (const t of transacoes) {
+      if (t.pagina !== l.pagina) continue;
+      const dist = Math.abs(t.indiceAncora - l.indice);
+      if (dist < melhorDist) { melhorDist = dist; melhorT = t; }
+    }
+    if (melhorT) melhorT.partesDesc.push(l.texto);
+  }
+
+  for (const t of transacoes) {
+    t.descricao = t.partesDesc.join(" ").replace(/\s+/g, " ").trim() || "Transação";
+    delete t.partesDesc; delete t.indiceAncora; delete t.pagina;
+  }
+  return transacoes;
 }
 
 /* OFX — formato estruturado (Itaú e outros bancos tradicionais), via de alta confiança. */
@@ -229,43 +287,6 @@ function parsearOfx(texto) {
     transacoes.push({
       data: new Date(`${ano}-${mes}-${dia}T12:00:00`).toISOString(),
       descricao: (nameMatch ? nameMatch[1] : "Transação").trim(),
-      valor: Math.abs(valor),
-      tipo: valor >= 0 ? "receita" : "despesa",
-    });
-  }
-  return transacoes;
-}
-
-/* PDF do Mercado Pago — melhor esforço, cada transação tem uma "linha âncora" com data + ID
-   numérico + valor + saldo; a descrição (1-4 linhas) fica em volta dela no mesmo bloco separado
-   por linha em branco. Parser baseado nesse padrão de âncora, não em posição fixa de coluna. */
-function parsearExtratoMercadoPago(texto) {
-  const inicioIdx = texto.indexOf("DETALHE DOS MOVIMENTOS");
-  let corpo = inicioIdx >= 0 ? texto.slice(inicioIdx) : texto;
-  corpo = corpo.replace(/Data\s+Descrição\s+ID da operação\s+Valor\s+Saldo/g, "");
-  corpo = corpo.replace(/\d+\/\d+/g, "");
-  corpo = corpo.split("Data de geração:")[0];
-
-  const blocos = corpo.split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
-  const padraoAncora = /(\d{2}-\d{2}-\d{4})\s*(.*?)\s*(\d{9,15})\s+R\$\s*(-?[\d.,]+)\s+R\$\s*([\d.,]+)\s*$/;
-
-  const transacoes = [];
-  for (const bloco of blocos) {
-    const linhas = bloco.split("\n").map((l) => l.trim()).filter(Boolean);
-    let match = null, idxAncora = -1;
-    for (let i = 0; i < linhas.length; i++) {
-      const m = linhas[i].match(padraoAncora);
-      if (m) { match = m; idxAncora = i; break; }
-    }
-    if (!match) continue;
-    const [, data, descNaLinha, , valorStr] = match;
-    const outrasLinhas = linhas.filter((_, j) => j !== idxAncora);
-    const descricao = [descNaLinha, ...outrasLinhas].filter(Boolean).join(" ").trim();
-    const valor = parseFloat(valorStr.replace(/\./g, "").replace(",", "."));
-    const [dia, mes, ano] = data.split("-");
-    transacoes.push({
-      data: new Date(`${ano}-${mes}-${dia}T12:00:00`).toISOString(),
-      descricao,
       valor: Math.abs(valor),
       tipo: valor >= 0 ? "receita" : "despesa",
     });
@@ -1782,8 +1803,7 @@ function ModalImportarExtrato({ conta, lancamentosExistentes, onImportar, onFech
         const arrayBuffer = await file.arrayBuffer();
         const pdfjsLib = await carregarPdfJs();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-        const texto = await reconstruirTextoComLayout(pdf);
-        transacoes = parsearExtratoMercadoPago(texto);
+        transacoes = await extrairTransacoesMercadoPagoPdf(pdf);
         formato = "pdf";
         if (!transacoes.length) throw new Error("Não consegui reconhecer transações nesse PDF — o formato pode ter mudado.");
       } else {

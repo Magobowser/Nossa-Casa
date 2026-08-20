@@ -75,23 +75,78 @@ function totaisDoMes(itensDoMes) {
   return { entradas, saidas, saldoDoMes: entradas - saidas };
 }
 
+/* ---------- Seção 15 do mapa: sub-aba Resumo — funções de cálculo dos 6 blocos ---------- */
+function totaisUltimosMeses(lancamentos, contaId, quantidadeMeses) {
+  let chaves = [chaveMesAtual()];
+  for (let i = 1; i < quantidadeMeses; i++) chaves.unshift(mesAnteriorDe(chaves[0]));
+  return chaves.map((chave) => {
+    const doMes = lancamentosDoMes(lancamentos, chave, contaId);
+    const { entradas, saidas } = totaisDoMes(doMes);
+    return { chave, entradas, saidas };
+  });
+}
+function saldoProjetadoDoMes(lancamentos, lancamentosFixos, chaveMes, contaId) {
+  const reais = lancamentosDoMes(lancamentos, chaveMes, contaId);
+  const previstos = previstosDoMes(lancamentosFixos, lancamentos, chaveMes, contaId);
+  const { saldoDoMes } = totaisDoMes(reais);
+  const previsaoEntradas = previstos.filter((p) => p.tipo === "receita").reduce((a, p) => a + p.valor, 0);
+  const previsaoSaidas = previstos.filter((p) => p.tipo === "despesa").reduce((a, p) => a + p.valor, 0);
+  return saldoDoMes + previsaoEntradas - previsaoSaidas;
+}
+function fixoVsVariavelDoMes(despesasDoMes) {
+  const fixo = despesasDoMes.filter((d) => d.fixa).reduce((a, d) => a + d.valor, 0);
+  const variavel = despesasDoMes.filter((d) => !d.fixa).reduce((a, d) => a + d.valor, 0);
+  return { fixo, variavel };
+}
+function topGastosDoMes(despesasDoMes, quantidade) {
+  return [...despesasDoMes].sort((a, b) => b.valor - a.valor).slice(0, quantidade);
+}
+const CORES_RESUMO_FINANCAS = ["#065f46", "#0891b2", "#7c3aed", "#c2410c", "#be123c", "#4d7c0f", "#a16207", "#0e7490"];
+function corParaNome(nome) {
+  let hash = 0;
+  for (let i = 0; i < nome.length; i++) hash = nome.charCodeAt(i) + ((hash << 5) - hash);
+  return CORES_RESUMO_FINANCAS[Math.abs(hash) % CORES_RESUMO_FINANCAS.length];
+}
+
+/* ---------- Fase 8 do mapa: regra de orçamento com grupos e barras de meta ---------- */
+const SEED_GRUPOS_ORCAMENTO = [
+  { id: "orc_necessidades", nome: "Necessidades", percentual: 50 },
+  { id: "orc_desejos", nome: "Desejos", percentual: 30 },
+  { id: "orc_poupanca", nome: "Poupança", percentual: 20 },
+];
+/* Renda mensal: usa o valor manual se o usuário definiu um; senão, soma as receitas FIXAS
+   recorrentes (não soma tudo que entrou no mês — isso incluiria bônus/extra pontual e faria o
+   alvo balançar mês a mês, o que não é o espírito de uma regra de orçamento estável). */
+function rendaMensalCalculada(lancamentosFixos, rendaManual) {
+  if (rendaManual != null) return rendaManual;
+  return lancamentosFixos.filter((f) => f.tipo === "receita").reduce((a, f) => a + f.valor, 0);
+}
+function progressoGruposOrcamento(gruposOrcamento, categorias, despesasDoMes, renda) {
+  return gruposOrcamento.map((g) => {
+    const idsCategoriaDoGrupo = new Set(categorias.filter((c) => c.grupo_orcamento_id === g.id).map((c) => c.id));
+    const gasto = despesasDoMes.filter((d) => idsCategoriaDoGrupo.has(d.categoria_id)).reduce((a, d) => a + d.valor, 0);
+    const alvo = renda * (g.percentual / 100);
+    return { ...g, gasto, alvo, pct: alvo > 0 ? Math.min(100, Math.round((gasto / alvo) * 100)) : 0, estourou: gasto > alvo };
+  });
+}
+
 /* ---------- Seed — categorias padrão, pequeno conjunto pra começar (seção 12, Fase 1) ---------- */
 const SEED_CATEGORIAS_FINANCEIRAS = [
-  { id: "catfn_salario", nome: "Salário", icone: "💼", tipo: "receita", padrao_fixa: true },
-  { id: "catfn_extra", nome: "Extra / Freelance", icone: "💵", tipo: "receita", padrao_fixa: false },
-  { id: "catfn_outros_receita", nome: "Outros", icone: "➕", tipo: "receita", padrao_fixa: false },
-  { id: "catfn_moradia", nome: "Moradia", icone: "🏠", tipo: "despesa", padrao_fixa: true },
-  { id: "catfn_mercado", nome: "Mercado", icone: "🛒", tipo: "despesa", padrao_fixa: false },
-  { id: "catfn_contas_casa", nome: "Água / Luz / Internet", icone: "💡", tipo: "despesa", padrao_fixa: true },
-  { id: "catfn_transporte", nome: "Transporte", icone: "🚗", tipo: "despesa", padrao_fixa: false },
-  { id: "catfn_saude", nome: "Saúde", icone: "💊", tipo: "despesa", padrao_fixa: false },
-  { id: "catfn_educacao", nome: "Educação", icone: "📚", tipo: "despesa", padrao_fixa: true },
-  { id: "catfn_lazer", nome: "Lazer", icone: "🎉", tipo: "despesa", padrao_fixa: false },
-  { id: "catfn_assinaturas", nome: "Assinaturas", icone: "📱", tipo: "despesa", padrao_fixa: true },
-  { id: "catfn_outros_despesa", nome: "Outros", icone: "➖", tipo: "despesa", padrao_fixa: false },
-  { id: "catfn_ajuste_receita", nome: "Ajuste de saldo", icone: "⚖️", tipo: "receita", padrao_fixa: false },
-  { id: "catfn_ajuste_despesa", nome: "Ajuste de saldo", icone: "⚖️", tipo: "despesa", padrao_fixa: false },
-  { id: "catfn_aporte_meta", nome: "Guardado em reserva/meta", icone: "🎯", tipo: "despesa", padrao_fixa: false },
+  { id: "catfn_salario", nome: "Salário", icone: "💼", tipo: "receita", padrao_fixa: true, grupo_orcamento_id: null },
+  { id: "catfn_extra", nome: "Extra / Freelance", icone: "💵", tipo: "receita", padrao_fixa: false, grupo_orcamento_id: null },
+  { id: "catfn_outros_receita", nome: "Outros", icone: "➕", tipo: "receita", padrao_fixa: false, grupo_orcamento_id: null },
+  { id: "catfn_moradia", nome: "Moradia", icone: "🏠", tipo: "despesa", padrao_fixa: true, grupo_orcamento_id: "orc_necessidades" },
+  { id: "catfn_mercado", nome: "Mercado", icone: "🛒", tipo: "despesa", padrao_fixa: false, grupo_orcamento_id: "orc_necessidades" },
+  { id: "catfn_contas_casa", nome: "Água / Luz / Internet", icone: "💡", tipo: "despesa", padrao_fixa: true, grupo_orcamento_id: "orc_necessidades" },
+  { id: "catfn_transporte", nome: "Transporte", icone: "🚗", tipo: "despesa", padrao_fixa: false, grupo_orcamento_id: "orc_necessidades" },
+  { id: "catfn_saude", nome: "Saúde", icone: "💊", tipo: "despesa", padrao_fixa: false, grupo_orcamento_id: "orc_necessidades" },
+  { id: "catfn_educacao", nome: "Educação", icone: "📚", tipo: "despesa", padrao_fixa: true, grupo_orcamento_id: "orc_necessidades" },
+  { id: "catfn_lazer", nome: "Lazer", icone: "🎉", tipo: "despesa", padrao_fixa: false, grupo_orcamento_id: "orc_desejos" },
+  { id: "catfn_assinaturas", nome: "Assinaturas", icone: "📱", tipo: "despesa", padrao_fixa: true, grupo_orcamento_id: "orc_desejos" },
+  { id: "catfn_outros_despesa", nome: "Outros", icone: "➖", tipo: "despesa", padrao_fixa: false, grupo_orcamento_id: "orc_desejos" },
+  { id: "catfn_ajuste_receita", nome: "Ajuste de saldo", icone: "⚖️", tipo: "receita", padrao_fixa: false, grupo_orcamento_id: null },
+  { id: "catfn_ajuste_despesa", nome: "Ajuste de saldo", icone: "⚖️", tipo: "despesa", padrao_fixa: false, grupo_orcamento_id: null },
+  { id: "catfn_aporte_meta", nome: "Guardado em reserva/meta", icone: "🎯", tipo: "despesa", padrao_fixa: false, grupo_orcamento_id: "orc_poupanca" },
 ];
 /* Nota: "catfn_mercado" tem id fixo de propósito — é o alvo da integração automática
    Mercado → Finanças (Fase 6 do mapa), pra ter uma categoria estável de referência desde já. */
@@ -132,6 +187,185 @@ async function extrairTextoDoPdf(arrayBuffer) {
    aqui é o tamanho da STRING guardada no localStorage, não o arquivo original. */
 function tamanhoAproximadoKB(strBase64) {
   return Math.round((strBase64 || "").length / 1024);
+}
+
+/* ---------- Seção 14 do mapa: importação de extrato bancário ---------- */
+/* pdf.js dá a posição (x,y) de cada trecho de texto, mas não reconstrói a ordem visual das
+   linhas sozinho — isso precisa ser feito manualmente a partir das coordenadas, agrupando texto
+   que está na mesma altura (linha) e ordenando da esquerda pra direita dentro dela. Testado com
+   extrato real do usuário: 89/89 transações extraídas certas, soma batendo com o banco. */
+async function reconstruirTextoComLayout(pdf) {
+  let textoCompleto = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const linhas = {};
+    for (const item of content.items) {
+      const y = Math.round(item.transform[5]);
+      if (!linhas[y]) linhas[y] = [];
+      linhas[y].push({ x: item.transform[4], texto: item.str });
+    }
+    const ysOrdenados = Object.keys(linhas).map(Number).sort((a, b) => b - a);
+    for (const y of ysOrdenados) {
+      const itensDaLinha = linhas[y].sort((a, b) => a.x - b.x);
+      textoCompleto += itensDaLinha.map((it) => it.texto).join(" ") + "\n";
+    }
+    textoCompleto += "\n";
+  }
+  return textoCompleto;
+}
+
+/* OFX — formato estruturado (Itaú e outros bancos tradicionais), via de alta confiança. */
+function parsearOfx(texto) {
+  const transacoes = [];
+  const blocos = texto.match(/<STMTTRN>[\s\S]*?<\/STMTTRN>/g) || [];
+  for (const bloco of blocos) {
+    const dtposted = bloco.match(/<DTPOSTED>(\d{8})/);
+    const trnamt = bloco.match(/<TRNAMT>(-?[\d.]+)/);
+    const nameMatch = bloco.match(/<NAME>([^\n\r<]*)/) || bloco.match(/<MEMO>([^\n\r<]*)/);
+    if (!dtposted || !trnamt) continue;
+    const ano = dtposted[1].slice(0, 4), mes = dtposted[1].slice(4, 6), dia = dtposted[1].slice(6, 8);
+    const valor = parseFloat(trnamt[1]);
+    transacoes.push({
+      data: new Date(`${ano}-${mes}-${dia}T12:00:00`).toISOString(),
+      descricao: (nameMatch ? nameMatch[1] : "Transação").trim(),
+      valor: Math.abs(valor),
+      tipo: valor >= 0 ? "receita" : "despesa",
+    });
+  }
+  return transacoes;
+}
+
+/* PDF do Mercado Pago — melhor esforço, cada transação tem uma "linha âncora" com data + ID
+   numérico + valor + saldo; a descrição (1-4 linhas) fica em volta dela no mesmo bloco separado
+   por linha em branco. Parser baseado nesse padrão de âncora, não em posição fixa de coluna. */
+function parsearExtratoMercadoPago(texto) {
+  const inicioIdx = texto.indexOf("DETALHE DOS MOVIMENTOS");
+  let corpo = inicioIdx >= 0 ? texto.slice(inicioIdx) : texto;
+  corpo = corpo.replace(/Data\s+Descrição\s+ID da operação\s+Valor\s+Saldo/g, "");
+  corpo = corpo.replace(/\d+\/\d+/g, "");
+  corpo = corpo.split("Data de geração:")[0];
+
+  const blocos = corpo.split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
+  const padraoAncora = /(\d{2}-\d{2}-\d{4})\s*(.*?)\s*(\d{9,15})\s+R\$\s*(-?[\d.,]+)\s+R\$\s*([\d.,]+)\s*$/;
+
+  const transacoes = [];
+  for (const bloco of blocos) {
+    const linhas = bloco.split("\n").map((l) => l.trim()).filter(Boolean);
+    let match = null, idxAncora = -1;
+    for (let i = 0; i < linhas.length; i++) {
+      const m = linhas[i].match(padraoAncora);
+      if (m) { match = m; idxAncora = i; break; }
+    }
+    if (!match) continue;
+    const [, data, descNaLinha, , valorStr] = match;
+    const outrasLinhas = linhas.filter((_, j) => j !== idxAncora);
+    const descricao = [descNaLinha, ...outrasLinhas].filter(Boolean).join(" ").trim();
+    const valor = parseFloat(valorStr.replace(/\./g, "").replace(",", "."));
+    const [dia, mes, ano] = data.split("-");
+    transacoes.push({
+      data: new Date(`${ano}-${mes}-${dia}T12:00:00`).toISOString(),
+      descricao,
+      valor: Math.abs(valor),
+      tipo: valor >= 0 ? "receita" : "despesa",
+    });
+  }
+  return transacoes;
+}
+
+/* Fingerprint pra deduplicação — evita reimportar a mesma transação se o extrato importado
+   se sobrepuser com um período já importado antes. */
+function fingerprintTransacao(t) {
+  return `${t.data.slice(0, 10)}_${t.valor.toFixed(2)}_${t.tipo}_${t.descricao.slice(0, 40)}`;
+}
+
+/* Achado testando com dado real (seção 14.6 do mapa): o Mercado Pago tem sua própria "caixinha"
+   — "Dinheiro reservado X" / "Dinheiro retirado X" / "Reserva por gastos X" é dinheiro se movendo
+   pra dentro/fora de uma reserva nomeada, não gasto real. Detecção só sugere, nunca força. */
+function pareceReservaDeMeta(descricao) {
+  return /^(Dinheiro reservado|Dinheiro retirado|Reserva por gastos)\b/i.test(descricao.trim());
+}
+function extrairNomeReserva(descricao) {
+  return descricao.replace(/^(Dinheiro reservado|Dinheiro retirado|Reserva por gastos)\s*/i, "").trim();
+}
+
+/* ---------- Fase 7 do mapa: cartão de crédito — fatura, parcelas, competência × caixa ---------- */
+/* O cálculo mais delicado do módulo inteiro — testado isoladamente em todos os casos limite
+   (compra no dia exato do fechamento, vencimento virando o mês) antes de usar em qualquer lugar.
+   Dado o dia de fechamento e vencimento do cartão: se a compra foi ANTES ou NO dia do fechamento,
+   cai na fatura que fecha nesse mês; se foi DEPOIS, cai na fatura seguinte. O vencimento é sempre
+   a PRÓXIMA ocorrência do dia de vencimento depois do fechamento — funciona tanto pra cartão que
+   vence no mesmo mês (fecha dia 20, vence dia 27) quanto pro que vira o mês (fecha dia 28, vence
+   dia 5 do mês seguinte), sem precisar assumir qual dos dois é o caso. */
+function calcularCicloFatura(cartao, dataCompraIso) {
+  const d = new Date(dataCompraIso);
+  const dia = d.getDate();
+  let anoFech = d.getFullYear(), mesFech = d.getMonth();
+  if (dia > cartao.dia_fechamento) mesFech += 1;
+  const dataFechamento = new Date(anoFech, mesFech, cartao.dia_fechamento);
+  let dataVencimento = new Date(dataFechamento.getFullYear(), dataFechamento.getMonth(), cartao.dia_vencimento);
+  if (dataVencimento <= dataFechamento) dataVencimento = new Date(dataFechamento.getFullYear(), dataFechamento.getMonth() + 1, cartao.dia_vencimento);
+  return { dataFechamento, dataVencimento };
+}
+/* Gera N lançamentos de uma vez (um por parcela) — cada um já datado pro dia de vencimento da
+   fatura em que cai, não pro dia da compra. Isso é o que dá a "projeção de faturas futuras" de
+   graça: navegar pra um mês futuro já mostra a parcela, sem precisar de mecanismo separado.
+   Arredondamento: a última parcela absorve a diferença de centavos, pra soma bater exata com o
+   valor total da compra sempre, mesmo quando não divide exato (testado com vários casos). */
+function gerarLancamentosParcelados(compraBase, cartao, numParcelas) {
+  const compraParceladaId = uid();
+  const valorPorParcela = Math.round((compraBase.valorTotal / numParcelas) * 100) / 100;
+  const diferenca = Math.round((compraBase.valorTotal - valorPorParcela * numParcelas) * 100) / 100;
+  const dataBase = new Date(compraBase.data);
+  const lista = [];
+  for (let k = 1; k <= numParcelas; k++) {
+    const dataEquivalente = new Date(dataBase.getFullYear(), dataBase.getMonth() + (k - 1), dataBase.getDate());
+    const { dataVencimento } = calcularCicloFatura(cartao, dataEquivalente.toISOString());
+    const valorDessaParcela = k === numParcelas ? Math.round((valorPorParcela + diferenca) * 100) / 100 : valorPorParcela;
+    lista.push({
+      id: uid(), tipo: "despesa",
+      descricao: numParcelas > 1 ? `${compraBase.descricao} (${k}/${numParcelas})` : compraBase.descricao,
+      categoria_id: compraBase.categoria_id, valor: valorDessaParcela, data: dataVencimento.toISOString(),
+      fixa: false, recorrente: false, dia_recorrencia: null, forma_pagamento: "cartao",
+      conta_id: compraBase.conta_id, origem_fixo_id: null, documento_id: null,
+      cartao_id: cartao.id, parcela_atual: k, parcela_total: numParcelas, compra_parcelada_id: compraParceladaId,
+    });
+  }
+  return lista;
+}
+/* Aba de faturas por item (seção 7 do mapa): agrupa por compra_parcelada_id, mostra quanto falta
+   de cada uma — não é uma estrutura de dado nova, é outra forma de olhar pro mesmo lançamento. */
+function itensDeFaturaAgrupados(lancamentos, cartaoId) {
+  const doCartao = lancamentos.filter((l) => l.forma_pagamento === "cartao" && l.cartao_id === cartaoId);
+  const porCompra = {};
+  for (const l of doCartao) {
+    const chave = l.compra_parcelada_id || l.id;
+    (porCompra[chave] = porCompra[chave] || []).push(l);
+  }
+  const hoje = new Date();
+  return Object.values(porCompra).map((grupo) => {
+    grupo.sort((a, b) => a.parcela_atual - b.parcela_atual);
+    const primeira = grupo[0];
+    const restantes = grupo.filter((l) => new Date(l.data) >= hoje);
+    return {
+      id: primeira.compra_parcelada_id || primeira.id,
+      descricao: (primeira.descricao || "").replace(/\s*\(\d+\/\d+\)$/, ""),
+      categoriaId: primeira.categoria_id,
+      parcelaTotal: primeira.parcela_total || 1,
+      parcelasRestantes: restantes.length,
+      valorTotal: grupo.reduce((a, l) => a + l.valor, 0),
+      valorRestante: restantes.reduce((a, l) => a + l.valor, 0),
+      unica: (primeira.parcela_total || 1) <= 1,
+    };
+  }).sort((a, b) => b.parcelasRestantes - a.parcelasRestantes);
+}
+/* Projeção das próximas faturas — cai de graça, já que toda parcela futura já é um lançamento
+   real (não "previsto"), só soma o que já está datado pra cada mês. */
+function proximasFaturas(lancamentos, cartaoId, quantidadeMeses) {
+  const doCartao = lancamentos.filter((l) => l.forma_pagamento === "cartao" && l.cartao_id === cartaoId);
+  let chaves = [chaveMesAtual()];
+  for (let i = 1; i < quantidadeMeses; i++) chaves.push(mesSeguinte(chaves[chaves.length - 1]));
+  return chaves.map((chave) => ({ chave, total: doCartao.filter((l) => chaveMesDe(l.data) === chave).reduce((a, l) => a + l.valor, 0) }));
 }
 
 /* ---------- Fase 6: integração Mercado → Finanças ---------- */
@@ -194,7 +428,7 @@ function integrarCompraMercado(sessaoMercado, nomeMercado) {
 }
 
 function loadAllFinancas() {
-  let categorias = null, contas = [], lancamentos = [], lancamentosFixos = [], lembretes5Dias = [], reflexoesMensais = {}, limiar5Dias = 100, metas = [], documentos = [];
+  let categorias = null, contas = [], lancamentos = [], lancamentosFixos = [], lembretes5Dias = [], reflexoesMensais = {}, limiar5Dias = 100, metas = [], documentos = [], cartoes = [], gruposOrcamento = null, rendaManual = null;
   let houveErroCarregamento = false;
   try { const v = localStorage.getItem("fn_categorias"); categorias = v ? JSON.parse(v) : null; } catch (e) { houveErroCarregamento = true; }
   try { const v = localStorage.getItem("fn_contas"); contas = v ? JSON.parse(v) : []; } catch (e) { houveErroCarregamento = true; }
@@ -205,8 +439,12 @@ function loadAllFinancas() {
   try { const v = localStorage.getItem("fn_limiar5Dias"); limiar5Dias = v ? Number(v) : 100; } catch (e) {}
   try { const v = localStorage.getItem("fn_metas"); metas = v ? JSON.parse(v) : []; } catch (e) { houveErroCarregamento = true; }
   try { const v = localStorage.getItem("fn_documentos"); documentos = v ? JSON.parse(v) : []; } catch (e) { houveErroCarregamento = true; }
+  try { const v = localStorage.getItem("fn_cartoes"); cartoes = v ? JSON.parse(v) : []; } catch (e) { houveErroCarregamento = true; }
+  try { const v = localStorage.getItem("fn_gruposOrcamento"); gruposOrcamento = v ? JSON.parse(v) : null; } catch (e) { houveErroCarregamento = true; }
+  try { const v = localStorage.getItem("fn_rendaManual"); rendaManual = v ? Number(v) : null; } catch (e) {}
   if (!categorias) categorias = SEED_CATEGORIAS_FINANCEIRAS;
-  return { categorias, contas, lancamentos, lancamentosFixos, lembretes5Dias, reflexoesMensais, limiar5Dias, metas, documentos, houveErroCarregamento };
+  if (!gruposOrcamento) gruposOrcamento = SEED_GRUPOS_ORCAMENTO;
+  return { categorias, contas, lancamentos, lancamentosFixos, lembretes5Dias, reflexoesMensais, limiar5Dias, metas, documentos, cartoes, gruposOrcamento, rendaManual, houveErroCarregamento };
 }
 
 /* ---------- ModalConta — criar/editar conta financeira ---------- */
@@ -250,16 +488,17 @@ function ModalConta({ conta, onSalvar, onFechar }) {
 }
 
 /* ---------- ModalCategoriaFinanceira — criar/editar categoria ---------- */
-function ModalCategoriaFinanceira({ categoria, tipoInicial, onSalvar, onFechar }) {
+function ModalCategoriaFinanceira({ categoria, tipoInicial, gruposOrcamento, onSalvar, onFechar }) {
   useFecharComVoltar(true, onFechar);
   const [nome, setNome] = useState(categoria?.nome || "");
   const [icone, setIcone] = useState(categoria?.icone || "🏷️");
   const [tipo, setTipo] = useState(categoria?.tipo || tipoInicial || "despesa");
   const [padraoFixa, setPadraoFixa] = useState(categoria?.padrao_fixa || false);
+  const [grupoOrcamentoId, setGrupoOrcamentoId] = useState(categoria?.grupo_orcamento_id || null);
 
   function salvar() {
     if (!nome.trim()) { alert("Dá um nome pra essa categoria."); return; }
-    onSalvar({ id: categoria?.id || uid(), nome: nome.trim(), icone: icone.trim() || "🏷️", tipo, padrao_fixa: padraoFixa });
+    onSalvar({ id: categoria?.id || uid(), nome: nome.trim(), icone: icone.trim() || "🏷️", tipo, padrao_fixa: padraoFixa, grupo_orcamento_id: tipo === "despesa" ? grupoOrcamentoId : null });
   }
 
   return (
@@ -278,6 +517,15 @@ function ModalCategoriaFinanceira({ categoria, tipoInicial, onSalvar, onFechar }
           <input type="checkbox" checked={padraoFixa} onChange={(e) => setPadraoFixa(e.target.checked)} className="w-5 h-5" />
           Costuma ser um gasto/receita fixo
         </label>
+        {tipo === "despesa" && gruposOrcamento && gruposOrcamento.length > 0 && (
+          <div className="mb-4">
+            <label className="text-xs font-semibold text-stone-500 uppercase">Grupo do orçamento (opcional)</label>
+            <div className="flex gap-2 flex-wrap mt-1">
+              <Chip selected={grupoOrcamentoId === null} onClick={() => setGrupoOrcamentoId(null)}>Nenhum</Chip>
+              {gruposOrcamento.map((g) => <Chip key={g.id} selected={grupoOrcamentoId === g.id} onClick={() => setGrupoOrcamentoId(g.id)}>{g.nome}</Chip>)}
+            </div>
+          </div>
+        )}
         <div className="flex gap-2">
           <button onClick={onFechar} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
           <button onClick={salvar} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Salvar</button>
@@ -288,7 +536,7 @@ function ModalCategoriaFinanceira({ categoria, tipoInicial, onSalvar, onFechar }
 }
 
 /* ---------- ModalLancamento — criar/editar receita ou despesa ---------- */
-function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPadraoId, limiar5Dias, valorInicial, documentoId, onSalvar, onAdiar5Dias, onRemover, onFechar }) {
+function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPadraoId, cartoes, limiar5Dias, valorInicial, documentoId, onSalvar, onAdiar5Dias, onRemover, onFechar }) {
   useFecharComVoltar(true, onFechar);
   const [tipo, setTipo] = useState(lancamento?.tipo || tipoInicial || "despesa");
   const [descricao, setDescricao] = useState(lancamento?.descricao || "");
@@ -300,9 +548,12 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
   const [diaRecorrencia, setDiaRecorrencia] = useState(lancamento?.dia_recorrencia ? String(lancamento.dia_recorrencia) : String(new Date().getDate()));
   const [formaPagamento, setFormaPagamento] = useState(lancamento?.forma_pagamento || "debito");
   const [contaId, setContaId] = useState(lancamento?.conta_id || contaPadraoId || contas[0]?.id || null);
+  const [cartaoId, setCartaoId] = useState(lancamento?.cartao_id || cartoes?.[0]?.id || null);
+  const [numParcelasTexto, setNumParcelasTexto] = useState(lancamento?.parcela_total ? String(lancamento.parcela_total) : "1");
   const [dadosPendentesTeste5Dias, setDadosPendentesTeste5Dias] = useState(null);
 
   const categoriasDoTipo = categorias.filter((c) => c.tipo === tipo);
+  const cartaoEscolhido = (cartoes || []).find((c) => c.id === cartaoId);
 
   function tentarSalvar() {
     const valor = parsePrecoInteligente(valorTexto);
@@ -310,6 +561,21 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
     if (valor == null || valor <= 0) { alert("Preenche o valor."); return; }
     if (!categoriaId) { alert("Escolhe uma categoria."); return; }
     if (!contaId) { alert("Escolhe (ou cadastra) uma conta primeiro."); return; }
+
+    /* Fase 7: compra no cartão sempre passa pela geração de parcelas (mesmo 1x — assim a data já
+       fica certa pro dia de vencimento da fatura, "caixa", não o dia da compra em si). Parcelado
+       (2+) pula o teste dos 5 dias — já é uma decisão mais deliberada que uma compra à vista. */
+    if (tipo === "despesa" && formaPagamento === "cartao" && cartaoEscolhido) {
+      const numParcelas = Math.max(1, numDe(numParcelasTexto) || 1);
+      const serie = gerarLancamentosParcelados({ descricao: descricao.trim(), categoria_id: categoriaId, valorTotal: valor, data, conta_id: contaId }, cartaoEscolhido, numParcelas);
+      if (numParcelas > 1) { onSalvar(serie); return; }
+      const dadosUnico = serie[0];
+      const elegivel = !lancamento && !fixa && valor >= limiar5Dias;
+      if (elegivel) { setDadosPendentesTeste5Dias(dadosUnico); return; }
+      onSalvar(dadosUnico);
+      return;
+    }
+
     const dados = {
       id: lancamento?.id || uid(),
       tipo, descricao: descricao.trim(), categoria_id: categoriaId, valor,
@@ -393,6 +659,22 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
               <Chip selected={formaPagamento === "debito"} onClick={() => setFormaPagamento("debito")}>💳 Débito</Chip>
               <Chip selected={formaPagamento === "cartao"} onClick={() => setFormaPagamento("cartao")}>🏦 Cartão</Chip>
             </div>
+
+            {formaPagamento === "cartao" && (
+              (cartoes && cartoes.length > 0) ? (
+                <>
+                  <label className="text-xs font-semibold text-stone-500 uppercase">Qual cartão</label>
+                  <div className="flex gap-2 flex-wrap mt-1 mb-3">
+                    {cartoes.map((c) => <Chip key={c.id} selected={cartaoId === c.id} onClick={() => setCartaoId(c.id)}>{c.nome}</Chip>)}
+                  </div>
+                  <label className="text-xs font-semibold text-stone-500 uppercase">Em quantas vezes</label>
+                  <input value={numParcelasTexto} onChange={(e) => setNumParcelasTexto(e.target.value.replace(/\D/g, ""))} className="w-20 border border-stone-300 rounded-xl p-2.5 mt-1 mb-1 font-mono2" aria-label="Número de parcelas" />
+                  <p className="text-xs text-stone-400 mb-3">1 = à vista. Cada parcela já cai na fatura certa, calculado pelo fechamento/vencimento do cartão.</p>
+                </>
+              ) : (
+                <p className="text-xs text-amber-700 bg-amber-50 rounded-lg p-2.5 mb-3">Nenhum cartão cadastrado ainda — cadastra um na aba 💳 Cartões pra acompanhar fatura e parcelas.</p>
+              )
+            )}
           </>
         )}
 
@@ -459,49 +741,6 @@ function montarLancamentoAjuste({ valor, motivo, contaId, dataIso }) {
     forma_pagamento: null, conta_id: contaId, origem_fixo_id: null,
     eh_ajuste: true,
   };
-}
-
-/* ---------- ModalAjusteManual — Fase 2: sempre disponível, corrige na hora sem comparar nada ---------- */
-function ModalAjusteManual({ conta, onSalvar, onFechar }) {
-  useFecharComVoltar(true, onFechar);
-  const [direcao, setDirecao] = useState("aumentar");
-  const [valorTexto, setValorTexto] = useState("");
-  const [motivo, setMotivo] = useState("");
-
-  function salvar() {
-    const valor = parsePrecoInteligente(valorTexto);
-    if (valor == null || valor <= 0) { alert("Preenche o valor do ajuste."); return; }
-    if (!motivo.trim()) { alert("Descreve o motivo — esse ajuste fica visível no histórico com esse texto."); return; }
-    onSalvar(montarLancamentoAjuste({ valor: direcao === "aumentar" ? valor : -valor, motivo, contaId: conta.id }));
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[70]" onClick={onFechar}>
-      <div className="bg-white rounded-t-2xl w-full max-w-md p-5 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-lg font-bold mb-1">⚖️ Ajuste manual</h3>
-        <p className="text-xs text-stone-500 mb-3">Pra quando você já sabe que o saldo está errado — erro de digitação, esqueceu de lançar algo, ou o app calculou diferente do esperado. Fica sempre visível no histórico, nunca corrige escondido.</p>
-
-        <div className="flex gap-2 mb-3">
-          <Chip selected={direcao === "aumentar"} onClick={() => setDirecao("aumentar")}>▲ Aumentar saldo</Chip>
-          <Chip selected={direcao === "diminuir"} onClick={() => setDirecao("diminuir")}>▼ Diminuir saldo</Chip>
-        </div>
-
-        <label className="text-xs font-semibold text-stone-500 uppercase">Valor do ajuste</label>
-        <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5 mt-1 mb-3">
-          <span className="text-stone-400 font-mono2">R$</span>
-          <input value={valorTexto} onChange={(e) => setValorTexto(sanitizarEntradaPreco(e.target.value))} placeholder="ex: 5000 = R$50,00" className="font-mono2 font-bold text-lg flex-1 outline-none" aria-label="Valor do ajuste" />
-        </div>
-
-        <label className="text-xs font-semibold text-stone-500 uppercase">Motivo</label>
-        <input value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="ex: esqueci de lançar o Uber de terça" className="w-full border border-stone-300 rounded-xl p-2.5 mt-1 mb-4" aria-label="Motivo do ajuste" />
-
-        <div className="flex gap-2">
-          <button onClick={onFechar} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
-          <button onClick={salvar} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Salvar ajuste</button>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 /* ---------- ModalConciliacao — Fase 2: compara saldo real do banco com o calculado ---------- */
@@ -597,13 +836,149 @@ function ModalReflexaoMensal({ chaveMes, reflexaoExistente, onSalvar, onFechar }
   );
 }
 
-function TelaExtrato({ categorias, contas, lancamentos, onSalvarLancamento, onRemoverLancamento, lancamentosFixos, setLancamentosFixos, lembretes5Dias, limiar5Dias, onAdiar5Dias, onConfirmarLembrete, onDescartarLembrete, reflexoesMensais, onSalvarReflexao, onAbrirConfig }) {
+/* ---------- GraficoEntradasSaidasPorMes — barra dupla por mês (seção 15.1) ---------- */
+function GraficoEntradasSaidasPorMes({ dados }) {
+  const maiorValor = Math.max(...dados.flatMap((d) => [d.entradas, d.saidas]), 1);
+  return (
+    <div>
+      <div className="flex items-end justify-between gap-2 h-24 px-1 mb-1">
+        {dados.map((d) => (
+          <div key={d.chave} className="flex flex-col items-center gap-1 flex-1 h-full justify-end">
+            <div className="w-full flex gap-1 items-end h-full">
+              <div className="flex-1 bg-emerald-500 rounded-t min-h-[2px]" style={{ height: `${Math.max(2, (d.entradas / maiorValor) * 100)}%` }} />
+              <div className="flex-1 bg-red-300 rounded-t min-h-[2px]" style={{ height: `${Math.max(2, (d.saidas / maiorValor) * 100)}%` }} />
+            </div>
+            <span className="text-[10px] text-stone-400 whitespace-nowrap">{nomeDaChaveMes(d.chave).slice(0, 3)}</span>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-3 text-xs text-stone-500 justify-center">
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500" /> Entradas</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-300" /> Saídas</span>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- TelaResumoFinancas — sub-aba dentro do Extrato, os 6 blocos (seção 15) ---------- */
+function TelaResumoFinancas({ chaveMes, categorias, contas, lancamentos, lancamentosFixos, metas, gruposOrcamento, rendaManual }) {
+  const conta = contas[0] || null;
+  const trendMeses = totaisUltimosMeses(lancamentos, conta?.id, 4);
+  const despesasDoMes = lancamentosDoMes(lancamentos, chaveMes, conta?.id).filter((l) => l.tipo === "despesa");
+  const receitasDoMes = lancamentosDoMes(lancamentos, chaveMes, conta?.id).filter((l) => l.tipo === "receita");
+
+  const renda = rendaMensalCalculada(lancamentosFixos, rendaManual);
+  const progressoOrcamento = gruposOrcamento.length > 0 && renda > 0 ? progressoGruposOrcamento(gruposOrcamento, categorias, despesasDoMes, renda) : [];
+
+  const entradasSaidasPorCategoria = {};
+  for (const d of despesasDoMes) {
+    const cat = by(categorias, d.categoria_id);
+    const nome = cat?.nome || "Sem categoria";
+    entradasSaidasPorCategoria[nome] = (entradasSaidasPorCategoria[nome] || 0) + d.valor;
+  }
+  const entradasCategoria = Object.entries(entradasSaidasPorCategoria).map(([nome, valor]) => ({ nome, valor, cor: corParaNome(nome) }));
+
+  const { fixo, variavel } = fixoVsVariavelDoMes(despesasDoMes);
+  const entradasFixoVariavel = [
+    { nome: "Fixo", valor: fixo, cor: "#065f46" },
+    { nome: "Variável", valor: variavel, cor: "#a7f3d0" },
+  ];
+
+  const saldoProjetado = saldoProjetadoDoMes(lancamentos, lancamentosFixos, chaveMes, conta?.id);
+  const top5 = topGastosDoMes(despesasDoMes, 5);
+
+  return (
+    <div className="h-full overflow-y-auto p-4 space-y-3">
+      {progressoOrcamento.length > 0 && (
+        <div className="bg-white border border-stone-200 rounded-xl p-3">
+          <div className="font-semibold text-stone-700 text-sm mb-1">Orçamento — {nomeDaChaveMes(chaveMes)}</div>
+          <div className="text-xs text-stone-400 mb-2">Renda considerada: <span className="font-mono2">{brl(renda)}</span></div>
+          <div className="space-y-2.5">
+            {progressoOrcamento.map((g) => (
+              <div key={g.id}>
+                <div className="flex items-center justify-between text-xs mb-1">
+                  <span className="text-stone-600 font-medium">{g.nome}</span>
+                  <span className={`font-mono2 ${g.estourou ? "text-red-600 font-bold" : "text-stone-500"}`}>{brl(g.gasto)} de {brl(g.alvo)}{g.estourou ? " · estourou" : ""}</span>
+                </div>
+                <div className="w-full bg-stone-100 rounded-full h-2">
+                  <div className={`h-2 rounded-full ${g.estourou ? "bg-red-500" : "bg-emerald-600"}`} style={{ width: Math.min(100, g.pct) + "%" }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white border border-stone-200 rounded-xl p-3">
+        <div className="font-semibold text-stone-700 text-sm mb-2">Entradas x Saídas por mês</div>
+        <GraficoEntradasSaidasPorMes dados={trendMeses} />
+      </div>
+
+      <div className="bg-white border border-stone-200 rounded-xl p-3">
+        <div className="font-semibold text-stone-700 text-sm mb-2">Saídas por categoria — {nomeDaChaveMes(chaveMes)}</div>
+        <GraficoCategorias entradas={entradasCategoria} tituloVazio="Nenhuma despesa nesse mês ainda." />
+      </div>
+
+      <div className="bg-white border border-stone-200 rounded-xl p-3">
+        <div className="font-semibold text-stone-700 text-sm mb-2">Fixo x Variável</div>
+        <GraficoCategorias entradas={entradasFixoVariavel} tituloVazio="Nenhuma despesa nesse mês ainda." tipoInicial="pizza" />
+      </div>
+
+      {metas.length > 0 && (
+        <div className="bg-white border border-stone-200 rounded-xl p-3">
+          <div className="font-semibold text-stone-700 text-sm mb-2">Metas</div>
+          <div className="space-y-2">
+            {metas.map((m) => {
+              const pct = Math.min(100, (m.valor_guardado / m.valor_alvo) * 100);
+              return (
+                <div key={m.id}>
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="text-stone-600">{m.icone} {m.nome}</span>
+                    <span className="font-mono2 text-stone-500">{Math.round(pct)}%</span>
+                  </div>
+                  <div className="w-full bg-stone-100 rounded-full h-1.5">
+                    <div className="bg-emerald-600 h-1.5 rounded-full" style={{ width: pct + "%" }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white border border-stone-200 rounded-xl p-3">
+        <div className="font-semibold text-stone-700 text-sm mb-1">Saldo projetado do mês</div>
+        <p className="text-xs text-stone-400 mb-2">Considerando o que já entrou/saiu, mais o que ainda falta (recorrentes previstos).</p>
+        <div className={`font-mono2 font-bold text-2xl ${saldoProjetado >= 0 ? "text-emerald-700" : "text-red-600"}`}>{brl(saldoProjetado)}</div>
+      </div>
+
+      <div className="bg-white border border-stone-200 rounded-xl p-3">
+        <div className="font-semibold text-stone-700 text-sm mb-2">Top 5 maiores gastos — {nomeDaChaveMes(chaveMes)}</div>
+        {!top5.length && <p className="text-xs text-stone-400 text-center py-3">Nenhuma despesa nesse mês ainda.</p>}
+        <div className="space-y-1.5">
+          {top5.map((d) => {
+            const cat = by(categorias, d.categoria_id);
+            return (
+              <div key={d.id} className="flex items-center justify-between text-sm">
+                <span className="text-stone-600 truncate flex items-center gap-1.5">{cat?.icone || "🏷️"} {d.descricao}</span>
+                <span className="font-mono2 font-semibold text-stone-700 shrink-0 ml-2">{brl(d.valor)}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TelaExtrato({ categorias, contas, lancamentos, onSalvarLancamento, onRemoverLancamento, lancamentosFixos, setLancamentosFixos, lembretes5Dias, limiar5Dias, onAdiar5Dias, onConfirmarLembrete, onDescartarLembrete, reflexoesMensais, onSalvarReflexao, metas, cartoes, gruposOrcamento, rendaManual, onResolverPendente, onAbrirConfig }) {
   const [chaveMes, setChaveMes] = useState(chaveMesAtual());
+  const [subVisao, setSubVisao] = useState("lista");
   const [modalLancamento, setModalLancamento] = useState(null); // null | {} (novo) | item (editar)
   const [tipoNovo, setTipoNovo] = useState("despesa");
   const [confirmar, setConfirmar] = useState(null);
-  const [modalAjuste, setModalAjuste] = useState(false);
   const [modalConciliacao, setModalConciliacao] = useState(false);
+  const [pendenteEmCategorizacao, setPendenteEmCategorizacao] = useState(null);
   const [modalReflexao, setModalReflexao] = useState(false);
 
   const conta = contas[0] || null; // Fase 1: uma conta principal implícita quando só existe uma
@@ -626,6 +1001,7 @@ function TelaExtrato({ categorias, contas, lancamentos, onSalvarLancamento, onRe
   const { entradas, saidas, saldoDoMes } = totaisDoMes(itensDoMes);
   const saldoConta = calcularSaldoConta(conta, lancamentos, chaveMesEhFutura(chaveMes) ? null : chaveMes);
   const lembretesVencidos = lembretes5Dias.filter((l) => new Date(l.data_lembrete) <= new Date());
+  const pendentesCategorizacao = lancamentos.filter((l) => l.categoria_id == null && !l.previsto);
   const mesPassado = chaveMes < chaveMesAtual();
   const reflexaoDesseMes = reflexoesMensais[chaveMes];
 
@@ -676,6 +1052,13 @@ function TelaExtrato({ categorias, contas, lancamentos, onSalvarLancamento, onRe
           </div>
         ))}
 
+        {pendentesCategorizacao.length > 0 && (
+          <button onClick={() => setPendenteEmCategorizacao(pendentesCategorizacao[0])} className="w-full text-left bg-blue-50 border border-blue-200 rounded-xl p-3 mb-2 flex items-center justify-between tap-target">
+            <span className="text-sm text-blue-700 font-semibold">📥 {pendentesCategorizacao.length} lançamento(s) importado(s) aguardando categoria</span>
+            <span className="text-blue-700 text-xs">resolver →</span>
+          </button>
+        )}
+
         {mesPassado && (
           <button onClick={() => setModalReflexao(true)} className="w-full text-left bg-white border border-stone-200 rounded-xl p-3 mb-2 flex items-center justify-between tap-target">
             <span className="text-sm text-stone-600">{reflexaoDesseMes ? "✓ Refletido sobre esse mês" : "📝 Fazer reflexão desse mês"}</span>
@@ -683,37 +1066,49 @@ function TelaExtrato({ categorias, contas, lancamentos, onSalvarLancamento, onRe
           </button>
         )}
 
-        <div className="bg-white border border-stone-200 rounded-xl p-3 mb-2">
-          <div className="grid grid-cols-3 gap-2 text-center mb-2">
-            <div><div className="text-[10px] text-stone-400 uppercase">Entradas</div><div className="font-mono2 font-bold text-emerald-700 text-sm">{brl(entradas)}</div></div>
-            <div><div className="text-[10px] text-stone-400 uppercase">Saídas</div><div className="font-mono2 font-bold text-red-500 text-sm">{brl(saidas)}</div></div>
-            <div><div className="text-[10px] text-stone-400 uppercase">Saldo do mês</div><div className={`font-mono2 font-bold text-sm ${saldoDoMes >= 0 ? "text-emerald-700" : "text-red-500"}`}>{brl(saldoDoMes)}</div></div>
-          </div>
-          <div className="border-t border-stone-100 pt-2 flex items-center justify-between">
-            <span className="text-xs text-stone-500">Saldo da conta{contas.length > 1 ? ` (${conta.nome})` : ""}{chaveMesEhFutura(chaveMes) ? " · projetado" : ""}</span>
-            <span className="font-mono2 font-bold text-stone-800">{brl(saldoConta)}</span>
-          </div>
-          {!chaveMesEhFutura(chaveMes) && (
-            <div className="flex gap-3 mt-2 pt-2 border-t border-stone-100">
-              <button onClick={() => setModalAjuste(true)} className="text-xs text-stone-500 font-semibold tap-target">⚖️ Ajuste manual</button>
-              <button onClick={() => setModalConciliacao(true)} className="text-xs text-stone-500 font-semibold tap-target">🔄 Conciliar</button>
-            </div>
-          )}
+        <div className="flex gap-2 mb-2">
+          <Chip selected={subVisao === "lista"} onClick={() => setSubVisao("lista")}>📋 Lista</Chip>
+          <Chip selected={subVisao === "resumo"} onClick={() => setSubVisao("resumo")}>📊 Resumo</Chip>
         </div>
-      </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-24 space-y-2">
-        {!itensDoMes.length && (
-          <div className="text-center py-10 text-stone-400 text-sm">Nenhum lançamento nesse mês ainda.</div>
+        {subVisao === "lista" && (
+          <div className="bg-white border border-stone-200 rounded-xl p-3 mb-2">
+            <div className="grid grid-cols-3 gap-2 text-center mb-2">
+              <div><div className="text-[10px] text-stone-400 uppercase">Entradas</div><div className="font-mono2 font-bold text-emerald-700 text-sm">{brl(entradas)}</div></div>
+              <div><div className="text-[10px] text-stone-400 uppercase">Saídas</div><div className="font-mono2 font-bold text-red-500 text-sm">{brl(saidas)}</div></div>
+              <div><div className="text-[10px] text-stone-400 uppercase">Saldo do mês</div><div className={`font-mono2 font-bold text-sm ${saldoDoMes >= 0 ? "text-emerald-700" : "text-red-500"}`}>{brl(saldoDoMes)}</div></div>
+            </div>
+            <div className="border-t border-stone-100 pt-2 flex items-center justify-between">
+              <span className="text-xs text-stone-500">Saldo da conta{contas.length > 1 ? ` (${conta.nome})` : ""}{chaveMesEhFutura(chaveMes) ? " · projetado" : ""}</span>
+              <span className="font-mono2 font-bold text-stone-800">{brl(saldoConta)}</span>
+            </div>
+            {!chaveMesEhFutura(chaveMes) && (
+              <div className="flex gap-3 mt-2 pt-2 border-t border-stone-100">
+                <button onClick={() => setModalConciliacao(true)} className="text-xs text-stone-500 font-semibold tap-target">🔄 Conciliar</button>
+              </div>
+            )}
+          </div>
         )}
-        {itensDoMes.map((item) => (
-          <LinhaLancamento key={item.id} item={item} categoria={by(categorias, item.categoria_id)} onAbrir={item.previsto ? confirmarPrevisto : setModalLancamento} />
-        ))}
       </div>
 
-      <div className="p-4 pt-0 shrink-0">
-        <button onClick={() => { setTipoNovo("despesa"); setModalLancamento({}); }} className="w-full bg-emerald-700 text-white font-semibold py-3 rounded-xl tap-target">+ Novo lançamento</button>
-      </div>
+      {subVisao === "resumo" ? (
+        <TelaResumoFinancas chaveMes={chaveMes} categorias={categorias} contas={contas} lancamentos={lancamentos} lancamentosFixos={lancamentosFixos} metas={metas} gruposOrcamento={gruposOrcamento} rendaManual={rendaManual} />
+      ) : (
+        <>
+          <div className="flex-1 overflow-y-auto px-4 pb-24 space-y-2">
+            {!itensDoMes.length && (
+              <div className="text-center py-10 text-stone-400 text-sm">Nenhum lançamento nesse mês ainda.</div>
+            )}
+            {itensDoMes.map((item) => (
+              <LinhaLancamento key={item.id} item={item} categoria={by(categorias, item.categoria_id)} onAbrir={item.previsto ? confirmarPrevisto : setModalLancamento} />
+            ))}
+          </div>
+
+          <div className="p-4 pt-0 shrink-0">
+            <button onClick={() => { setTipoNovo("despesa"); setModalLancamento({}); }} className="w-full bg-emerald-700 text-white font-semibold py-3 rounded-xl tap-target">+ Novo lançamento</button>
+          </div>
+        </>
+      )}
 
       {modalLancamento !== null && (
         <ModalLancamento
@@ -722,6 +1117,7 @@ function TelaExtrato({ categorias, contas, lancamentos, onSalvarLancamento, onRe
           categorias={categorias}
           contas={contas}
           contaPadraoId={conta?.id}
+          cartoes={cartoes}
           limiar5Dias={limiar5Dias}
           onSalvar={salvarLancamento}
           onAdiar5Dias={(dados) => { onAdiar5Dias(dados); setModalLancamento(null); }}
@@ -730,26 +1126,95 @@ function TelaExtrato({ categorias, contas, lancamentos, onSalvarLancamento, onRe
         />
       )}
       {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
-      {modalAjuste && conta && (
-        <ModalAjusteManual conta={conta} onSalvar={(dados) => { onSalvarLancamento(dados); setModalAjuste(false); }} onFechar={() => setModalAjuste(false)} />
-      )}
       {modalConciliacao && conta && (
         <ModalConciliacao conta={conta} saldoCalculado={saldoConta} onSalvar={(dados) => { onSalvarLancamento(dados); setModalConciliacao(false); }} onFechar={() => setModalConciliacao(false)} />
       )}
       {modalReflexao && (
         <ModalReflexaoMensal chaveMes={chaveMes} reflexaoExistente={reflexaoDesseMes} onSalvar={(dados) => { onSalvarReflexao(chaveMes, dados); setModalReflexao(false); }} onFechar={() => setModalReflexao(false)} />
       )}
+      {pendenteEmCategorizacao && (
+        <ModalCategorizarPendente lancamento={pendenteEmCategorizacao} categorias={categorias} metas={metas}
+          onResolver={(dados) => { onResolverPendente(dados); setPendenteEmCategorizacao(null); }} onFechar={() => setPendenteEmCategorizacao(null)} />
+      )}
     </div>
   );
 }
 
 /* ---------- TelaConfigFinancas — categorias + contas (Fase 1: bem simples) ---------- */
-function TelaConfigFinancas({ categorias, setCategorias, contas, setContas, lancamentos, limiar5Dias, setLimiar5Dias }) {
+/* ---------- ModalGrupoOrcamento — Fase 8: criar/editar grupo com percentual ---------- */
+function ModalGrupoOrcamento({ grupo, onSalvar, onFechar }) {
+  useFecharComVoltar(true, onFechar);
+  const [nome, setNome] = useState(grupo?.nome || "");
+  const [percentualTexto, setPercentualTexto] = useState(grupo?.percentual != null ? String(grupo.percentual) : "");
+
+  function salvar() {
+    const percentual = numDe(percentualTexto);
+    if (!nome.trim()) { alert("Dá um nome pro grupo (ex: Necessidades, Desejos)."); return; }
+    if (!percentual || percentual <= 0 || percentual > 100) { alert("Percentual precisa ser entre 1 e 100."); return; }
+    onSalvar({ id: grupo?.id || uid(), nome: nome.trim(), percentual });
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[75]" onClick={onFechar}>
+      <div className="bg-white rounded-t-2xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-lg font-bold mb-3">{grupo ? "Editar grupo" : "Novo grupo"}</h3>
+        <label className="text-xs font-semibold text-stone-500 uppercase">Nome</label>
+        <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Necessidades, Desejos, Poupança..." className="w-full border border-stone-300 rounded-xl p-2.5 mt-1 mb-3" aria-label="Nome do grupo" />
+        <label className="text-xs font-semibold text-stone-500 uppercase">Percentual da renda</label>
+        <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5 mt-1 mb-4">
+          <input value={percentualTexto} onChange={(e) => setPercentualTexto(e.target.value.replace(/\D/g, ""))} placeholder="ex: 50" className="font-mono2 font-bold flex-1 outline-none" aria-label="Percentual" />
+          <span className="text-stone-400 font-mono2">%</span>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={onFechar} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
+          <button onClick={salvar} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Salvar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- ModalRendaMensal — Fase 8: definir renda manual, ou voltar a usar a automática ---------- */
+function ModalRendaMensal({ rendaManual, rendaAutomatica, onSalvar, onFechar }) {
+  useFecharComVoltar(true, onFechar);
+  const [texto, setTexto] = useState(rendaManual != null ? formatarValorCampo(rendaManual) : "");
+
+  function salvar() {
+    const valor = parsePrecoInteligente(texto);
+    if (valor == null || valor <= 0) { alert("Preenche um valor de renda."); return; }
+    onSalvar(valor);
+    onFechar();
+  }
+  function usarAutomatica() { onSalvar(null); onFechar(); }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[75]" onClick={onFechar}>
+      <div className="bg-white rounded-t-2xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-lg font-bold mb-1">Renda mensal</h3>
+        <p className="text-xs text-stone-500 mb-3">Por padrão, soma automática das suas receitas fixas recorrentes: <b className="font-mono2">{brl(rendaAutomatica)}</b>. Só define um valor manual se quiser sobrepor isso.</p>
+        <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5 mb-4">
+          <span className="text-stone-400 font-mono2">R$</span>
+          <input value={texto} onChange={(e) => setTexto(sanitizarEntradaPreco(e.target.value))} placeholder="ex: 500000 = R$5.000,00" className="font-mono2 font-bold flex-1 outline-none" aria-label="Renda mensal manual" />
+        </div>
+        <div className="flex gap-2">
+          {rendaManual != null && <button onClick={usarAutomatica} className="py-2.5 px-3 rounded-lg border border-stone-300 text-stone-600 font-semibold text-sm tap-target">Usar automática</button>}
+          <button onClick={onFechar} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
+          <button onClick={salvar} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Salvar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TelaConfigFinancas({ categorias, setCategorias, contas, setContas, lancamentos, lancamentosFixos, limiar5Dias, setLimiar5Dias, onImportarExtrato, gruposOrcamento, setGruposOrcamento, rendaManual, setRendaManual }) {
   const [subaba, setSubaba] = useState("contas");
   const [formConta, setFormConta] = useState(null);
   const [formCategoria, setFormCategoria] = useState(null);
+  const [formGrupo, setFormGrupo] = useState(null);
+  const [modalRenda, setModalRenda] = useState(false);
   const [confirmar, setConfirmar] = useState(null);
   const [limiarTexto, setLimiarTexto] = useState(formatarValorCampo(limiar5Dias));
+  const [modalImportar, setModalImportar] = useState(null); // conta escolhida pra importar
 
   function salvarConta(dados) { setContas((cs) => upsertBy(cs, [dados])); setFormConta(null); }
   function removerConta(conta) {
@@ -768,12 +1233,27 @@ function TelaConfigFinancas({ categorias, setCategorias, contas, setContas, lanc
       acao: () => { setCategorias((cs) => cs.filter((c) => c.id !== cat.id)); setConfirmar(null); },
     });
   }
+  function salvarGrupo(dados) { setGruposOrcamento((gs) => upsertBy(gs, [dados])); setFormGrupo(null); }
+  function removerGrupo(grupo) {
+    setConfirmar({
+      titulo: "Excluir grupo", severo: false, textoConfirmar: "Excluir",
+      mensagem: `Excluir "${grupo.nome}"? Categorias vinculadas a ele ficam sem grupo.`,
+      acao: () => {
+        setGruposOrcamento((gs) => gs.filter((g) => g.id !== grupo.id));
+        setCategorias((cs) => cs.map((c) => (c.grupo_orcamento_id === grupo.id ? { ...c, grupo_orcamento_id: null } : c)));
+        setConfirmar(null);
+      },
+    });
+  }
+  const rendaAutomatica = rendaMensalCalculada(lancamentosFixos, null);
+  const somaPercentuais = gruposOrcamento.reduce((a, g) => a + g.percentual, 0);
 
   return (
     <div className="h-full overflow-y-auto p-4">
       <div className="flex gap-2 mb-4">
         <Chip selected={subaba === "contas"} onClick={() => setSubaba("contas")}>Contas</Chip>
         <Chip selected={subaba === "categorias"} onClick={() => setSubaba("categorias")}>Categorias</Chip>
+        <Chip selected={subaba === "orcamento"} onClick={() => setSubaba("orcamento")}>Orçamento</Chip>
         <Chip selected={subaba === "preferencias"} onClick={() => setSubaba("preferencias")}>Preferências</Chip>
       </div>
 
@@ -782,9 +1262,12 @@ function TelaConfigFinancas({ categorias, setCategorias, contas, setContas, lanc
           <button onClick={() => setFormConta({})} className="bg-emerald-700 text-white text-sm font-semibold px-3 py-2 rounded-lg mb-3 tap-target">+ Conta</button>
           <div className="space-y-2">
             {contas.map((c) => (
-              <div key={c.id} className="bg-white border border-stone-200 rounded-xl p-3 flex items-center justify-between">
-                <div><div className="font-semibold text-stone-800">{c.nome}</div><div className="text-xs text-stone-400 font-mono2">Saldo atual: {brl(calcularSaldoConta(c, lancamentos, null))}</div></div>
-                <div className="flex gap-3"><button onClick={() => setFormConta(c)} aria-label={`Editar ${c.nome}`} className="text-stone-400 tap-target">✏️</button><button onClick={() => removerConta(c)} aria-label={`Excluir ${c.nome}`} className="text-red-400 tap-target">🗑️</button></div>
+              <div key={c.id} className="bg-white border border-stone-200 rounded-xl p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div><div className="font-semibold text-stone-800">{c.nome}</div><div className="text-xs text-stone-400 font-mono2">Saldo atual: {brl(calcularSaldoConta(c, lancamentos, null))}</div></div>
+                  <div className="flex gap-3"><button onClick={() => setFormConta(c)} aria-label={`Editar ${c.nome}`} className="text-stone-400 tap-target">✏️</button><button onClick={() => removerConta(c)} aria-label={`Excluir ${c.nome}`} className="text-red-400 tap-target">🗑️</button></div>
+                </div>
+                <button onClick={() => setModalImportar(c)} className="text-xs text-emerald-700 font-semibold tap-target">📥 Importar extrato</button>
               </div>
             ))}
             {!contas.length && <p className="text-sm text-stone-400 text-center py-6">Nenhuma conta ainda.</p>}
@@ -811,6 +1294,42 @@ function TelaConfigFinancas({ categorias, setCategorias, contas, setContas, lanc
         </>
       )}
 
+      {subaba === "orcamento" && (
+        <>
+          <div className="bg-white border border-stone-200 rounded-xl p-3 mb-3">
+            <div className="font-semibold text-stone-700 mb-1">Renda mensal</div>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="font-mono2 font-bold text-xl text-stone-800">{brl(rendaManual != null ? rendaManual : rendaAutomatica)}</div>
+                <div className="text-xs text-stone-400">{rendaManual != null ? "definida manualmente" : "automática (soma das receitas fixas)"}</div>
+              </div>
+              <button onClick={() => setModalRenda(true)} className="text-emerald-700 font-semibold text-sm tap-target">editar</button>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between mb-2">
+            <div className="font-semibold text-stone-700 text-sm">Grupos ({somaPercentuais}% do total{somaPercentuais !== 100 ? " — não soma 100%" : ""})</div>
+            <button onClick={() => setFormGrupo({})} className="text-emerald-700 font-semibold text-sm tap-target">+ Grupo</button>
+          </div>
+          {somaPercentuais !== 100 && gruposOrcamento.length > 0 && (
+            <p className="text-xs text-amber-700 bg-amber-50 rounded-lg p-2.5 mb-2">⚠️ Os percentuais somam {somaPercentuais}%, não 100% — os alvos de cada grupo vão ficar um pouco fora do esperado até ajustar.</p>
+          )}
+          <div className="space-y-2">
+            {gruposOrcamento.map((g) => (
+              <div key={g.id} className="bg-white border border-stone-200 rounded-xl p-3 flex items-center justify-between">
+                <div>
+                  <div className="font-semibold text-stone-800">{g.nome}</div>
+                  <div className="text-xs text-stone-400 font-mono2">{g.percentual}% · alvo {brl((rendaManual != null ? rendaManual : rendaAutomatica) * (g.percentual / 100))}</div>
+                </div>
+                <div className="flex gap-3"><button onClick={() => setFormGrupo(g)} aria-label={`Editar ${g.nome}`} className="text-stone-400 tap-target">✏️</button><button onClick={() => removerGrupo(g)} aria-label={`Excluir ${g.nome}`} className="text-red-400 tap-target">🗑️</button></div>
+              </div>
+            ))}
+            {!gruposOrcamento.length && <p className="text-sm text-stone-400 text-center py-6">Nenhum grupo ainda.</p>}
+          </div>
+          <p className="text-xs text-stone-400 mt-3">Qual categoria pertence a qual grupo se edita em Categorias, ao editar cada uma.</p>
+        </>
+      )}
+
       {subaba === "preferencias" && (
         <div className="bg-white border border-stone-200 rounded-xl p-3">
           <div className="font-semibold text-stone-700 mb-1">🕐 Teste dos 5 dias</div>
@@ -824,8 +1343,13 @@ function TelaConfigFinancas({ categorias, setCategorias, contas, setContas, lanc
       )}
 
       {formConta !== null && <ModalConta conta={formConta.id ? formConta : null} onSalvar={salvarConta} onFechar={() => setFormConta(null)} />}
-      {formCategoria !== null && <ModalCategoriaFinanceira categoria={formCategoria.id ? formCategoria : null} onSalvar={salvarCategoria} onFechar={() => setFormCategoria(null)} />}
+      {formCategoria !== null && <ModalCategoriaFinanceira categoria={formCategoria.id ? formCategoria : null} gruposOrcamento={gruposOrcamento} onSalvar={salvarCategoria} onFechar={() => setFormCategoria(null)} />}
       {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
+      {modalImportar && (
+        <ModalImportarExtrato conta={modalImportar} lancamentosExistentes={lancamentos} onImportar={onImportarExtrato} onFechar={() => setModalImportar(null)} />
+      )}
+      {formGrupo !== null && <ModalGrupoOrcamento grupo={formGrupo.id ? formGrupo : null} onSalvar={salvarGrupo} onFechar={() => setFormGrupo(null)} />}
+      {modalRenda && <ModalRendaMensal rendaManual={rendaManual} rendaAutomatica={rendaAutomatica} onSalvar={setRendaManual} onFechar={() => setModalRenda(false)} />}
     </div>
   );
 }
@@ -1107,257 +1631,4 @@ function ModalUploadDocumento({ tipoDocumento, lancamentos, categorias, contas, 
         {arquivo && !processando && (
           <>
             <div className="bg-stone-50 rounded-lg p-2.5 mb-3 text-xs text-stone-600 flex items-center gap-2">
-              <span>{arquivo.mimeType === "application/pdf" ? "📄" : "🖼️"}</span>
-              <span className="truncate">{arquivo.nomeArquivo}</span>
-            </div>
-
-            {avisoEscaneado && (
-              <p className="text-xs text-amber-700 bg-amber-50 rounded-lg p-2.5 mb-3">Esse PDF parece ser uma imagem escaneada — não consegui ler o texto de dentro dele. Escolhe um lançamento abaixo ou cria um novo preenchendo o valor na mão.</p>
-            )}
-            {valorEncontrado != null && (
-              <p className="text-xs text-emerald-700 bg-emerald-50 rounded-lg p-2.5 mb-3 font-semibold">Valor identificado: {brl(valorEncontrado)} — confira antes de confirmar.</p>
-            )}
-
-            {candidatos.length > 0 && (
-              <>
-                <label className="text-xs font-semibold text-stone-500 uppercase">Vincular a um lançamento já existente</label>
-                <div className="space-y-1.5 mt-1 mb-3 max-h-48 overflow-y-auto">
-                  {candidatos.map((l) => (
-                    <button key={l.id} onClick={() => setLancamentoEscolhidoId(l.id)} className={`w-full text-left p-2.5 rounded-lg border text-sm flex items-center justify-between tap-target ${lancamentoEscolhidoId === l.id ? "border-emerald-600 bg-emerald-50" : "border-stone-200"}`}>
-                      <span className="truncate">{l.descricao} · {dataCurta(l.data)}</span>
-                      <span className="font-mono2 font-semibold shrink-0 ml-2">{brl(l.valor)}</span>
-                    </button>
-                  ))}
-                </div>
-                <button onClick={vincular} disabled={!lancamentoEscolhidoId} className="w-full py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target disabled:opacity-40 mb-2">Vincular a esse lançamento</button>
-                <div className="text-center text-xs text-stone-400 mb-2">— ou —</div>
-              </>
-            )}
-
-            <button onClick={() => setCriandoNovo(true)} className="w-full py-2.5 rounded-lg border border-emerald-700 text-emerald-700 font-semibold tap-target">+ Criar lançamento novo com esse documento</button>
-          </>
-        )}
-
-        <button onClick={onFechar} className="w-full py-2.5 mt-3 text-stone-500 font-semibold tap-target">Cancelar</button>
-      </div>
-    </div>
-  );
-}
-
-/* ---------- TelaDocumentos — Fase 5: arquivo de documentos, entrada e saída ---------- */
-function TelaDocumentos({ documentos, setDocumentos, lancamentos, onSalvarLancamento, categorias, contas }) {
-  const [tipoDocumento, setTipoDocumento] = useState("saida");
-  const [modalUpload, setModalUpload] = useState(false);
-  const [confirmar, setConfirmar] = useState(null);
-
-  const documentosDoTipo = documentos.filter((d) => d.tipo === tipoDocumento).sort((a, b) => new Date(b.data_upload) - new Date(a.data_upload));
-  const tamanhoTotalKB = documentos.reduce((acc, d) => acc + tamanhoAproximadoKB(d.arquivo_base64), 0);
-  const espacoApertado = tamanhoTotalKB > 3000; // aviso a partir de ~3MB guardado em documentos
-
-  function aoSalvarUpload({ arquivo, lancamentoId, criarNovo, dadosLancamento }) {
-    const documentoId = uid();
-    let idFinal = lancamentoId;
-    if (criarNovo) {
-      idFinal = dadosLancamento.id;
-      onSalvarLancamento({ ...dadosLancamento, documento_id: documentoId });
-    } else {
-      // marca o lançamento existente como tendo documento vinculado
-      const lancamentoAlvo = lancamentos.find((l) => l.id === lancamentoId);
-      if (lancamentoAlvo) onSalvarLancamento({ ...lancamentoAlvo, documento_id: documentoId });
-    }
-    setDocumentos((ds) => [...ds, {
-      id: documentoId, tipo: tipoDocumento, nome_arquivo: arquivo.nomeArquivo, arquivo_base64: arquivo.base64,
-      mime_type: arquivo.mimeType, data_upload: new Date().toISOString(), lancamento_id: idFinal,
-    }]);
-    setModalUpload(false);
-  }
-  function removerDocumento(doc) {
-    setConfirmar({
-      titulo: "Excluir documento", severo: false, textoConfirmar: "Excluir",
-      mensagem: `Excluir "${doc.nome_arquivo}"? O lançamento vinculado continua existindo, só o documento anexado some.`,
-      acao: () => { setDocumentos((ds) => ds.filter((d) => d.id !== doc.id)); setConfirmar(null); },
-    });
-  }
-  function abrirArquivo(doc) {
-    const w = window.open();
-    if (!w) return;
-    if (doc.mime_type === "application/pdf") { w.document.write(`<iframe src="${doc.arquivo_base64}" style="width:100%;height:100%;border:none;"></iframe>`); return; }
-    if (doc.mime_type === "text/plain") {
-      const texto = decodeURIComponent(escape(atob(doc.arquivo_base64.split(",")[1])));
-      w.document.write(`<pre style="font-family:monospace;font-size:16px;padding:20px;white-space:pre-wrap;">${texto.replace(/</g, "&lt;")}</pre>`);
-      return;
-    }
-    w.document.write(`<img src="${doc.arquivo_base64}" style="max-width:100%;" />`);
-  }
-
-  return (
-    <div className="h-full flex flex-col">
-      <div className="p-4 pb-2 shrink-0">
-        <div className="flex gap-2 mb-3">
-          <Chip selected={tipoDocumento === "entrada"} onClick={() => setTipoDocumento("entrada")}>📥 Entrada</Chip>
-          <Chip selected={tipoDocumento === "saida"} onClick={() => setTipoDocumento("saida")}>📤 Saída</Chip>
-        </div>
-        {espacoApertado && (
-          <div className="bg-amber-50 text-amber-800 text-xs rounded-lg p-2.5 mb-2">⚠️ Documentos já ocupam ~{(tamanhoTotalKB / 1024).toFixed(1)}MB do armazenamento do navegador (limite costuma ser 5-10MB no total, dividido com o resto do app). Se começar a dar erro de salvar, exclua documentos antigos.</div>
-        )}
-        <button onClick={() => setModalUpload(true)} className="w-full bg-emerald-700 text-white font-semibold py-3 rounded-xl tap-target">+ Anexar documento</button>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2">
-        {!documentosDoTipo.length && <p className="text-sm text-stone-400 text-center py-10">Nenhum documento de {tipoDocumento === "entrada" ? "entrada" : "saída"} ainda.</p>}
-        {documentosDoTipo.map((doc) => {
-          const lancamentoVinculado = by(lancamentos, doc.lancamento_id);
-          return (
-            <div key={doc.id} className="bg-white border border-stone-200 rounded-xl p-3 flex items-center justify-between gap-2">
-              <button onClick={() => abrirArquivo(doc)} className="flex items-center gap-2.5 min-w-0 text-left tap-target">
-                <span className="text-xl shrink-0">{doc.mime_type === "application/pdf" ? "📄" : doc.mime_type === "text/plain" ? "🧾" : "🖼️"}</span>
-                <div className="min-w-0">
-                  <div className="font-semibold text-stone-800 truncate">{lancamentoVinculado?.descricao || doc.nome_arquivo}</div>
-                  <div className="text-xs text-stone-400">{dataCurta(doc.data_upload)}{lancamentoVinculado ? " · " + brl(lancamentoVinculado.valor) : ""}</div>
-                </div>
-              </button>
-              <button onClick={() => removerDocumento(doc)} aria-label="Excluir documento" className="text-red-400 tap-target shrink-0">🗑️</button>
-            </div>
-          );
-        })}
-      </div>
-
-      {modalUpload && (
-        <ModalUploadDocumento tipoDocumento={tipoDocumento} lancamentos={lancamentos} categorias={categorias} contas={contas} onSalvar={aoSalvarUpload} onFechar={() => setModalUpload(false)} />
-      )}
-      {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
-    </div>
-  );
-}
-
-function TabBarFinancas({ aba, setAba }) {
-  const itens = [{ id: "extrato", label: "Extrato", icon: "📋" }, { id: "metas", label: "Metas", icon: "🎯" }, { id: "documentos", label: "Docs", icon: "📄" }, { id: "config", label: "Config", icon: "⚙️" }];
-  return (
-    <div className="flex border-t border-stone-200 bg-white shrink-0">
-      {itens.map((it) => (
-        <button key={it.id} onClick={() => setAba(it.id)} aria-label={it.label} className={`flex-1 flex flex-col items-center gap-1 py-2.5 text-xs font-medium tap-target ${aba === it.id ? "text-emerald-700" : "text-stone-400"}`}>
-          <span className="text-lg leading-none">{it.icon}</span>
-          <span>{it.label}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/* ---------- AppFinancas — app-shell do módulo (análogo ao AppMercado) ---------- */
-function AppFinancas({ apiKey, setApiKey, onVoltarHub }) {
-  const [loading, setLoading] = useState(true);
-  const [categorias, setCategorias] = useState(null);
-  const [contas, setContas] = useState([]);
-  const [lancamentos, setLancamentos] = useState([]);
-  const [lancamentosFixos, setLancamentosFixos] = useState([]);
-  const [lembretes5Dias, setLembretes5Dias] = useState([]);
-  const [reflexoesMensais, setReflexoesMensais] = useState({});
-  const [limiar5Dias, setLimiar5Dias] = useState(100);
-  const [metas, setMetas] = useState([]);
-  const [documentos, setDocumentos] = useState([]);
-  const [aba, setAba] = useState("extrato");
-  const [erroCarregamento, setErroCarregamento] = useState(false);
-  const [erroSalvamento, setErroSalvamento] = useState(false);
-
-  useEffect(() => {
-    const d = loadAllFinancas();
-    setCategorias(d.categorias); setContas(d.contas); setLancamentos(d.lancamentos); setLancamentosFixos(d.lancamentosFixos);
-    setLembretes5Dias(d.lembretes5Dias); setReflexoesMensais(d.reflexoesMensais); setLimiar5Dias(d.limiar5Dias); setMetas(d.metas); setDocumentos(d.documentos);
-    setErroCarregamento(!!d.houveErroCarregamento);
-    setLoading(false);
-  }, []);
-
-  useEffect(() => { if (!loading && categorias) { const ok = persist("fn_categorias", categorias); if (!ok) setErroSalvamento(true); } }, [categorias, loading]);
-  useEffect(() => { if (!loading) { const ok = persist("fn_contas", contas); if (!ok) setErroSalvamento(true); } }, [contas, loading]);
-  useEffect(() => { if (!loading) { const ok = persist("fn_lancamentos", lancamentos); if (!ok) setErroSalvamento(true); } }, [lancamentos, loading]);
-  useEffect(() => { if (!loading) { const ok = persist("fn_lancamentosFixos", lancamentosFixos); if (!ok) setErroSalvamento(true); } }, [lancamentosFixos, loading]);
-  useEffect(() => { if (!loading) { const ok = persist("fn_lembretes5Dias", lembretes5Dias); if (!ok) setErroSalvamento(true); } }, [lembretes5Dias, loading]);
-  useEffect(() => { if (!loading) { const ok = persist("fn_reflexoesMensais", reflexoesMensais); if (!ok) setErroSalvamento(true); } }, [reflexoesMensais, loading]);
-  useEffect(() => { if (!loading) localStorage.setItem("fn_limiar5Dias", String(limiar5Dias)); }, [limiar5Dias, loading]);
-  useEffect(() => { if (!loading) { const ok = persist("fn_metas", metas); if (!ok) setErroSalvamento(true); } }, [metas, loading]);
-  useEffect(() => { if (!loading) { const ok = persist("fn_documentos", documentos); if (!ok) setErroSalvamento(true); } }, [documentos, loading]);
-
-  /* Ao salvar um lançamento marcado como recorrente, garante um id de fixo estável — usa o que já
-     veio (confirmando um previsto, ou editando um recorrente existente) ou cria um novo na primeira
-     vez — e grava o LANÇAMENTO REAL já vinculado a esse id (senão o mesmo mês voltaria a aparecer
-     como "previsto" de novo, por não achar nenhum lançamento real ligado ao fixo). */
-  const salvarLancamentosComFixo = (dadosOriginais) => {
-    let dados = dadosOriginais;
-    if (dados.recorrente) {
-      const fixoId = dados.origem_fixo_id || uid();
-      dados = { ...dados, origem_fixo_id: fixoId };
-      setLancamentosFixos((fs) => upsertBy(fs, [{ ...dados, id: fixoId }]));
-    }
-    setLancamentos((ls) => upsertBy(ls, [dados]));
-  };
-  function removerLancamentoReal(id) {
-    setLancamentos((ls) => ls.filter((l) => l.id !== id));
-  }
-  /* Fase 3 — teste dos 5 dias: guarda como lembrete, NÃO cria lançamento real ainda. */
-  function adiarLancamento5Dias(dados) {
-    const dataLembrete = new Date();
-    dataLembrete.setDate(dataLembrete.getDate() + 5);
-    setLembretes5Dias((ls) => [...ls, { ...dados, id: uid(), data_lembrete: dataLembrete.toISOString() }]);
-  }
-  function confirmarLembrete(lembrete) {
-    const { id, data_lembrete, ...dadosLancamento } = lembrete;
-    salvarLancamentosComFixo({ ...dadosLancamento, id: uid(), data: new Date().toISOString() });
-    setLembretes5Dias((ls) => ls.filter((l) => l.id !== lembrete.id));
-  }
-  function descartarLembrete(id) {
-    setLembretes5Dias((ls) => ls.filter((l) => l.id !== id));
-  }
-  function salvarReflexao(chaveMes, dados) {
-    setReflexoesMensais((r) => ({ ...r, [chaveMes]: dados }));
-  }
-
-  if (loading || !categorias) return (
-    <div className="h-screen flex flex-col items-center justify-center bg-stone-100 text-stone-400 gap-2 max-w-md mx-auto">
-      <div>Carregando…</div>
-    </div>
-  );
-
-  return (
-    <div className="h-screen flex flex-col bg-stone-100 max-w-md mx-auto">
-      <div className="bg-emerald-800 text-white px-4 pt-4 pb-3 shrink-0 flex items-center gap-3">
-        <button onClick={onVoltarHub} aria-label="Voltar ao início" className="tap-target text-emerald-200 text-xl">←</button>
-        <div className="font-bold text-xl">💰 Finanças</div>
-      </div>
-
-      {erroCarregamento && (
-        <div className="bg-red-600 text-white text-xs p-2 shrink-0">⚠️ Alguns dados salvos não puderam ser lidos (parecem corrompidos).</div>
-      )}
-      {erroSalvamento && (
-        <div className="bg-red-600 text-white text-xs p-2 flex items-center justify-between gap-2 shrink-0">
-          <span>⚠️ Sua última alteração não foi salva (armazenamento cheio).</span>
-          <button onClick={() => setErroSalvamento(false)} className="underline font-semibold shrink-0 tap-target">Ok</button>
-        </div>
-      )}
-
-      <div className="flex-1 overflow-hidden">
-        {aba === "extrato" && (
-          <TelaExtrato
-            categorias={categorias} contas={contas}
-            lancamentos={lancamentos} onSalvarLancamento={salvarLancamentosComFixo} onRemoverLancamento={removerLancamentoReal}
-            lancamentosFixos={lancamentosFixos} setLancamentosFixos={setLancamentosFixos}
-            lembretes5Dias={lembretes5Dias} limiar5Dias={limiar5Dias} onAdiar5Dias={adiarLancamento5Dias}
-            onConfirmarLembrete={confirmarLembrete} onDescartarLembrete={descartarLembrete}
-            reflexoesMensais={reflexoesMensais} onSalvarReflexao={salvarReflexao}
-            onAbrirConfig={() => setAba("config")}
-          />
-        )}
-        {aba === "metas" && (
-          <TelaMetas metas={metas} setMetas={setMetas} contas={contas} onAporteComoDespesa={salvarLancamentosComFixo} />
-        )}
-        {aba === "documentos" && (
-          <TelaDocumentos documentos={documentos} setDocumentos={setDocumentos} lancamentos={lancamentos} onSalvarLancamento={salvarLancamentosComFixo} categorias={categorias} contas={contas} />
-        )}
-        {aba === "config" && (
-          <TelaConfigFinancas categorias={categorias} setCategorias={setCategorias} contas={contas} setContas={setContas} lancamentos={lancamentos} limiar5Dias={limiar5Dias} setLimiar5Dias={setLimiar5Dias} />
-        )}
-      </div>
-      <TabBarFinancas aba={aba} setAba={setAba} />
-    </div>
-  );
-}
+              <span>{arquivo.mimeType === "application/pdf" ? "📄" : "🖼

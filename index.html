@@ -93,7 +93,7 @@
 </script>
 
 <script>
-  window.VERSAO_APP = "2026.08.19-9"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
+  window.VERSAO_APP = "2026.08.20-6"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
 </script>
 
 <script>
@@ -127,8 +127,11 @@
 
     if (!("serviceWorker" in navigator)) return;
     navigator.serviceWorker.register("./service-worker.js", { updateViaCache: "none" }).then((reg) => {
-      reg.update();
-      setInterval(() => reg.update(), 60 * 1000);
+      /* Seção 33.1 do mapa: reg.update() sem .catch() — se falhar (rede instável, aba em segundo
+         plano no Android, algo passageiro), virava promessa rejeitada sem tratamento e disparava
+         a tela de erro à toa, mesmo o app não tendo quebrado de verdade. Não-crítico: loga e segue. */
+      reg.update().catch((e) => console.warn("Checagem de atualização falhou (não crítico):", e));
+      setInterval(() => reg.update().catch((e) => console.warn("Checagem de atualização falhou (não crítico):", e)), 60 * 1000);
 
       reg.addEventListener("updatefound", () => {
         const novoSW = reg.installing;

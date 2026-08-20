@@ -1631,4 +1631,640 @@ function ModalUploadDocumento({ tipoDocumento, lancamentos, categorias, contas, 
         {arquivo && !processando && (
           <>
             <div className="bg-stone-50 rounded-lg p-2.5 mb-3 text-xs text-stone-600 flex items-center gap-2">
-              <span>{arquivo.mimeType === "application/pdf" ? "📄" : "🖼
+              <span>{arquivo.mimeType === "application/pdf" ? "📄" : "📷"}</span>
+              <span className="truncate">{arquivo.nomeArquivo}</span>
+            </div>
+
+            {avisoEscaneado && (
+              <p className="text-xs text-amber-700 bg-amber-50 rounded-lg p-2.5 mb-3">Esse PDF parece ser uma imagem escaneada — não consegui ler o texto de dentro dele. Escolhe um lançamento abaixo ou cria um novo preenchendo o valor na mão.</p>
+            )}
+            {valorEncontrado != null && (
+              <p className="text-xs text-emerald-700 bg-emerald-50 rounded-lg p-2.5 mb-3 font-semibold">Valor identificado: {brl(valorEncontrado)} — confira antes de confirmar.</p>
+            )}
+
+            {candidatos.length > 0 && (
+              <>
+                <label className="text-xs font-semibold text-stone-500 uppercase">Vincular a um lançamento já existente</label>
+                <div className="space-y-1.5 mt-1 mb-3 max-h-48 overflow-y-auto">
+                  {candidatos.map((l) => (
+                    <button key={l.id} onClick={() => setLancamentoEscolhidoId(l.id)} className={`w-full text-left p-2.5 rounded-lg border text-sm flex items-center justify-between tap-target ${lancamentoEscolhidoId === l.id ? "border-emerald-600 bg-emerald-50" : "border-stone-200"}`}>
+                      <span className="truncate">{l.descricao} · {dataCurta(l.data)}</span>
+                      <span className="font-mono2 font-semibold shrink-0 ml-2">{brl(l.valor)}</span>
+                    </button>
+                  ))}
+                </div>
+                <button onClick={vincular} disabled={!lancamentoEscolhidoId} className="w-full py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target disabled:opacity-40 mb-2">Vincular a esse lançamento</button>
+                <div className="text-center text-xs text-stone-400 mb-2">— ou —</div>
+              </>
+            )}
+
+            <button onClick={() => setCriandoNovo(true)} className="w-full py-2.5 rounded-lg border border-emerald-700 text-emerald-700 font-semibold tap-target">+ Criar lançamento novo com esse documento</button>
+          </>
+        )}
+
+        <button onClick={onFechar} className="w-full py-2.5 mt-3 text-stone-500 font-semibold tap-target">Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- TelaDocumentos — Fase 5: arquivo de documentos, entrada e saída ---------- */
+function TelaDocumentos({ documentos, setDocumentos, lancamentos, onSalvarLancamento, categorias, contas }) {
+  const [tipoDocumento, setTipoDocumento] = useState("saida");
+  const [modalUpload, setModalUpload] = useState(false);
+  const [confirmar, setConfirmar] = useState(null);
+
+  const documentosDoTipo = documentos.filter((d) => d.tipo === tipoDocumento).sort((a, b) => new Date(b.data_upload) - new Date(a.data_upload));
+  const tamanhoTotalKB = documentos.reduce((acc, d) => acc + tamanhoAproximadoKB(d.arquivo_base64), 0);
+  const espacoApertado = tamanhoTotalKB > 3000; // aviso a partir de ~3MB guardado em documentos
+
+  function aoSalvarUpload({ arquivo, lancamentoId, criarNovo, dadosLancamento }) {
+    const documentoId = uid();
+    let idFinal = lancamentoId;
+    if (criarNovo) {
+      idFinal = dadosLancamento.id;
+      onSalvarLancamento({ ...dadosLancamento, documento_id: documentoId });
+    } else {
+      // marca o lançamento existente como tendo documento vinculado
+      const lancamentoAlvo = lancamentos.find((l) => l.id === lancamentoId);
+      if (lancamentoAlvo) onSalvarLancamento({ ...lancamentoAlvo, documento_id: documentoId });
+    }
+    setDocumentos((ds) => [...ds, {
+      id: documentoId, tipo: tipoDocumento, nome_arquivo: arquivo.nomeArquivo, arquivo_base64: arquivo.base64,
+      mime_type: arquivo.mimeType, data_upload: new Date().toISOString(), lancamento_id: idFinal,
+    }]);
+    setModalUpload(false);
+  }
+  function removerDocumento(doc) {
+    setConfirmar({
+      titulo: "Excluir documento", severo: false, textoConfirmar: "Excluir",
+      mensagem: `Excluir "${doc.nome_arquivo}"? O lançamento vinculado continua existindo, só o documento anexado some.`,
+      acao: () => { setDocumentos((ds) => ds.filter((d) => d.id !== doc.id)); setConfirmar(null); },
+    });
+  }
+  function abrirArquivo(doc) {
+    const w = window.open();
+    if (!w) return;
+    if (doc.mime_type === "application/pdf") { w.document.write(`<iframe src="${doc.arquivo_base64}" style="width:100%;height:100%;border:none;"></iframe>`); return; }
+    if (doc.mime_type === "text/plain") {
+      const texto = decodeURIComponent(escape(atob(doc.arquivo_base64.split(",")[1])));
+      w.document.write(`<pre style="font-family:monospace;font-size:16px;padding:20px;white-space:pre-wrap;">${texto.replace(/</g, "&lt;")}</pre>`);
+      return;
+    }
+    w.document.write(`<img src="${doc.arquivo_base64}" style="max-width:100%;" />`);
+  }
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="p-4 pb-2 shrink-0">
+        <div className="flex gap-2 mb-3">
+          <Chip selected={tipoDocumento === "entrada"} onClick={() => setTipoDocumento("entrada")}>📥 Entrada</Chip>
+          <Chip selected={tipoDocumento === "saida"} onClick={() => setTipoDocumento("saida")}>📤 Saída</Chip>
+        </div>
+        {espacoApertado && (
+          <div className="bg-amber-50 text-amber-800 text-xs rounded-lg p-2.5 mb-2">⚠️ Documentos já ocupam ~{(tamanhoTotalKB / 1024).toFixed(1)}MB do armazenamento do navegador (limite costuma ser 5-10MB no total, dividido com o resto do app). Se começar a dar erro de salvar, exclua documentos antigos.</div>
+        )}
+        <button onClick={() => setModalUpload(true)} className="w-full bg-emerald-700 text-white font-semibold py-3 rounded-xl tap-target">+ Anexar documento</button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2">
+        {!documentosDoTipo.length && <p className="text-sm text-stone-400 text-center py-10">Nenhum documento de {tipoDocumento === "entrada" ? "entrada" : "saída"} ainda.</p>}
+        {documentosDoTipo.map((doc) => {
+          const lancamentoVinculado = by(lancamentos, doc.lancamento_id);
+          return (
+            <div key={doc.id} className="bg-white border border-stone-200 rounded-xl p-3 flex items-center justify-between gap-2">
+              <button onClick={() => abrirArquivo(doc)} className="flex items-center gap-2.5 min-w-0 text-left tap-target">
+                <span className="text-xl shrink-0">{doc.mime_type === "application/pdf" ? "📄" : doc.mime_type === "text/plain" ? "🧾" : "📷"}</span>
+                <div className="min-w-0">
+                  <div className="font-semibold text-stone-800 truncate">{lancamentoVinculado?.descricao || doc.nome_arquivo}</div>
+                  <div className="text-xs text-stone-400">{dataCurta(doc.data_upload)}{lancamentoVinculado ? " · " + brl(lancamentoVinculado.valor) : ""}</div>
+                </div>
+              </button>
+              <button onClick={() => removerDocumento(doc)} aria-label="Excluir documento" className="text-red-400 tap-target shrink-0">🗑️</button>
+            </div>
+          );
+        })}
+      </div>
+
+      {modalUpload && (
+        <ModalUploadDocumento tipoDocumento={tipoDocumento} lancamentos={lancamentos} categorias={categorias} contas={contas} onSalvar={aoSalvarUpload} onFechar={() => setModalUpload(false)} />
+      )}
+      {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
+    </div>
+  );
+}
+
+/* ---------- ModalImportarExtrato — Fase (seção 14): sobe OFX ou PDF, deduplica, mostra prévia ---------- */
+function ModalImportarExtrato({ conta, lancamentosExistentes, onImportar, onFechar }) {
+  useFecharComVoltar(true, onFechar);
+  const [processando, setProcessando] = useState(false);
+  const [erro, setErro] = useState(null);
+  const [resultado, setResultado] = useState(null);
+
+  const fingerprintsExistentes = new Set(lancamentosExistentes.map(fingerprintTransacao));
+
+  async function aoEscolherArquivo(e) {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setErro(null);
+    setProcessando(true);
+    try {
+      const ehOfx = /\.ofx$/i.test(file.name);
+      const ehPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+      let transacoes = [], formato = null;
+      if (ehOfx) {
+        const texto = await file.text();
+        transacoes = parsearOfx(texto);
+        formato = "ofx";
+        if (!transacoes.length) throw new Error("Não consegui identificar nenhuma transação nesse arquivo OFX.");
+      } else if (ehPdf) {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdfjsLib = await carregarPdfJs();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const texto = await reconstruirTextoComLayout(pdf);
+        transacoes = parsearExtratoMercadoPago(texto);
+        formato = "pdf";
+        if (!transacoes.length) throw new Error("Não consegui reconhecer transações nesse PDF — o formato pode ter mudado.");
+      } else {
+        throw new Error("Formato não reconhecido — precisa ser .ofx ou .pdf.");
+      }
+      const novas = transacoes.filter((t) => !fingerprintsExistentes.has(fingerprintTransacao(t)));
+      setResultado({ novas, duplicadas: transacoes.length - novas.length, formato });
+    } catch (err) {
+      setErro(err.message);
+    } finally {
+      setProcessando(false);
+    }
+  }
+
+  function confirmar() {
+    onImportar(resultado.novas, conta.id);
+    onFechar();
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[70]" onClick={onFechar}>
+      <div className="bg-white rounded-t-2xl w-full max-w-md p-5 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-lg font-bold mb-1">📥 Importar extrato</h3>
+        <p className="text-xs text-stone-500 mb-3">Pra "{conta.nome}". Aceita OFX (Itaú e outros bancos) ou PDF (Mercado Pago). Toda transação entra sem categoria, esperando você organizar.</p>
+
+        {!resultado && !processando && (
+          <label className="flex items-center justify-center gap-2 border-2 border-dashed border-stone-300 rounded-xl py-6 text-sm text-stone-500 cursor-pointer tap-target">
+            📎 Escolher arquivo (.ofx ou .pdf)
+            <input type="file" accept=".ofx,.pdf,application/pdf" onChange={aoEscolherArquivo} className="hidden" />
+          </label>
+        )}
+        {processando && (
+          <div className="text-center py-8">
+            <div className="text-sm text-stone-500">Lendo o extrato...</div>
+            <div className="text-xs text-stone-400 mt-1">Pode levar alguns segundos, principalmente em PDF</div>
+          </div>
+        )}
+        {erro && <p className="text-xs text-red-600 mt-2">{erro}</p>}
+
+        {resultado && (
+          <>
+            <div className="bg-emerald-50 rounded-lg p-3 mb-3 text-sm">
+              <div className="font-semibold text-emerald-800">{resultado.novas.length} transação(ões) nova(s) encontrada(s)</div>
+              {resultado.duplicadas > 0 && <div className="text-xs text-stone-500 mt-1">{resultado.duplicadas} já tinha(m) sido importada(s) antes — ignoradas, sem duplicar.</div>}
+              {resultado.formato === "pdf" && <div className="text-xs text-amber-700 mt-2">⚠️ Extração de PDF é melhor esforço — confira se os valores fazem sentido antes de confirmar.</div>}
+            </div>
+            {!resultado.novas.length ? (
+              <p className="text-sm text-stone-500 text-center py-2">Nada novo pra importar.</p>
+            ) : (
+              <div className="max-h-48 overflow-y-auto space-y-1 mb-3 border border-stone-100 rounded-lg p-2">
+                {resultado.novas.slice(0, 20).map((t, i) => (
+                  <div key={i} className="flex items-center justify-between text-xs">
+                    <span className="text-stone-600 truncate">{dataCurta(t.data)} · {t.descricao.slice(0, 30)}</span>
+                    <span className={`font-mono2 font-semibold shrink-0 ml-2 ${t.tipo === "receita" ? "text-emerald-700" : "text-red-500"}`}>{t.tipo === "receita" ? "+" : "−"} {brl(t.valor)}</span>
+                  </div>
+                ))}
+                {resultado.novas.length > 20 && <div className="text-center text-stone-400 text-xs pt-1">e mais {resultado.novas.length - 20}...</div>}
+              </div>
+            )}
+          </>
+        )}
+
+        <div className="flex gap-2 mt-2">
+          <button onClick={onFechar} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">{resultado ? "Cancelar" : "Fechar"}</button>
+          {resultado && resultado.novas.length > 0 && (
+            <button onClick={confirmar} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Importar {resultado.novas.length}</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- ModalCategorizarPendente — resolve uma transação importada (categoria ou meta) ---------- */
+function ModalCategorizarPendente({ lancamento, categorias, metas, onResolver, onFechar }) {
+  useFecharComVoltar(true, onFechar);
+  const sugestaoReserva = pareceReservaDeMeta(lancamento.descricao);
+  const [modo, setModo] = useState(sugestaoReserva ? "meta" : "categoria");
+  const [categoriaId, setCategoriaId] = useState(null);
+  const [metaId, setMetaId] = useState(null);
+  const [criandoNovaMeta, setCriandoNovaMeta] = useState(sugestaoReserva && metas.length === 0);
+  const [nomeMetaNova, setNomeMetaNova] = useState(sugestaoReserva ? extrairNomeReserva(lancamento.descricao) : "");
+
+  const categoriasDoTipo = categorias.filter((c) => c.tipo === lancamento.tipo);
+
+  function confirmar() {
+    if (modo === "categoria") {
+      if (!categoriaId) { alert("Escolhe uma categoria."); return; }
+      onResolver({ ...lancamento, categoria_id: categoriaId });
+      return;
+    }
+    if (criandoNovaMeta) {
+      if (!nomeMetaNova.trim()) { alert("Dá um nome pra essa meta."); return; }
+      onResolver({ ...lancamento, resolverComoMeta: true, metaNovaNome: nomeMetaNova.trim() });
+      return;
+    }
+    if (!metaId) { alert("Escolhe uma meta."); return; }
+    onResolver({ ...lancamento, resolverComoMeta: true, metaIdEscolhida: metaId });
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[75]" onClick={onFechar}>
+      <div className="bg-white rounded-t-2xl w-full max-w-md p-5 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-lg font-bold mb-1">Categorizar lançamento</h3>
+        <div className="bg-stone-50 rounded-lg p-2.5 mb-3 text-sm">
+          <div className="font-semibold text-stone-800">{lancamento.descricao}</div>
+          <div className="text-xs text-stone-500">{dataCurta(lancamento.data)} · <span className={lancamento.tipo === "receita" ? "text-emerald-700" : "text-red-500"}>{brl(lancamento.valor)}</span></div>
+        </div>
+
+        {sugestaoReserva && (
+          <div className="bg-amber-50 text-amber-800 text-xs rounded-lg p-2.5 mb-3">💡 Isso parece uma reserva/retirada de "caixinha" — talvez faça mais sentido vincular a uma meta do que categorizar normal.</div>
+        )}
+
+        <div className="flex gap-2 mb-3">
+          <Chip selected={modo === "categoria"} onClick={() => setModo("categoria")}>Categoria normal</Chip>
+          <Chip selected={modo === "meta"} onClick={() => setModo("meta")}>🎯 Vincular a uma meta</Chip>
+        </div>
+
+        {modo === "categoria" && (
+          <div className="flex gap-2 flex-wrap mb-4">
+            {categoriasDoTipo.map((c) => (
+              <Chip key={c.id} selected={categoriaId === c.id} onClick={() => setCategoriaId(c.id)}>{c.icone} {c.nome}</Chip>
+            ))}
+          </div>
+        )}
+
+        {modo === "meta" && (
+          <div className="mb-4">
+            {!criandoNovaMeta ? (
+              <>
+                {metas.length > 0 && (
+                  <div className="flex gap-2 flex-wrap mb-2">
+                    {metas.map((m) => <Chip key={m.id} selected={metaId === m.id} onClick={() => setMetaId(m.id)}>{m.icone} {m.nome}</Chip>)}
+                  </div>
+                )}
+                <button onClick={() => setCriandoNovaMeta(true)} className="text-sm text-emerald-700 font-semibold underline tap-target">+ Criar meta nova</button>
+              </>
+            ) : (
+              <div>
+                <label className="text-xs font-semibold text-stone-500 uppercase">Nome da meta nova</label>
+                <input value={nomeMetaNova} onChange={(e) => setNomeMetaNova(e.target.value)} className="w-full border border-stone-300 rounded-xl p-2.5 mt-1" aria-label="Nome da meta" />
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <button onClick={onFechar} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Deixar pra depois</button>
+          <button onClick={confirmar} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Confirmar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- ModalCartao — Fase 7: criar/editar cartão ---------- */
+function ModalCartao({ cartao, onSalvar, onFechar }) {
+  useFecharComVoltar(true, onFechar);
+  const [nome, setNome] = useState(cartao?.nome || "");
+  const [fechamentoTexto, setFechamentoTexto] = useState(cartao?.dia_fechamento ? String(cartao.dia_fechamento) : "");
+  const [vencimentoTexto, setVencimentoTexto] = useState(cartao?.dia_vencimento ? String(cartao.dia_vencimento) : "");
+  const [limiteTexto, setLimiteTexto] = useState(cartao?.limite != null ? formatarValorCampo(cartao.limite) : "");
+
+  function salvar() {
+    const fechamento = numDe(fechamentoTexto), vencimento = numDe(vencimentoTexto);
+    if (!nome.trim()) { alert("Dá um nome pro cartão."); return; }
+    if (!fechamento || fechamento < 1 || fechamento > 31) { alert("Dia de fechamento precisa ser entre 1 e 31."); return; }
+    if (!vencimento || vencimento < 1 || vencimento > 31) { alert("Dia de vencimento precisa ser entre 1 e 31."); return; }
+    onSalvar({ id: cartao?.id || uid(), nome: nome.trim(), dia_fechamento: fechamento, dia_vencimento: vencimento, limite: parsePrecoInteligente(limiteTexto) });
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[70]" onClick={onFechar}>
+      <div className="bg-white rounded-t-2xl w-full max-w-md p-5 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-lg font-bold mb-3">{cartao ? "Editar cartão" : "Novo cartão"}</h3>
+
+        <label className="text-xs font-semibold text-stone-500 uppercase">Nome</label>
+        <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Nubank, Inter, Itaú..." className="w-full border border-stone-300 rounded-xl p-2.5 mt-1 mb-3" aria-label="Nome do cartão" />
+
+        <div className="grid grid-cols-2 gap-2 mb-3">
+          <div>
+            <label className="text-xs font-semibold text-stone-500 uppercase">Dia do fechamento</label>
+            <input value={fechamentoTexto} onChange={(e) => setFechamentoTexto(e.target.value.replace(/\D/g, ""))} placeholder="ex: 20" className="w-full border border-stone-300 rounded-xl p-2.5 mt-1 font-mono2" aria-label="Dia de fechamento" />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-stone-500 uppercase">Dia do vencimento</label>
+            <input value={vencimentoTexto} onChange={(e) => setVencimentoTexto(e.target.value.replace(/\D/g, ""))} placeholder="ex: 27" className="w-full border border-stone-300 rounded-xl p-2.5 mt-1 font-mono2" aria-label="Dia de vencimento" />
+          </div>
+        </div>
+        <p className="text-xs text-stone-400 mb-3">Compra depois do fechamento cai na fatura seguinte, não na atual — isso já é calculado sozinho a partir desses dois dias.</p>
+
+        <label className="text-xs font-semibold text-stone-500 uppercase">Limite (opcional)</label>
+        <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5 mt-1 mb-4">
+          <span className="text-stone-400 font-mono2">R$</span>
+          <input value={limiteTexto} onChange={(e) => setLimiteTexto(sanitizarEntradaPreco(e.target.value))} placeholder="ex: 500000 = R$5.000,00" className="font-mono2 font-bold flex-1 outline-none" aria-label="Limite do cartão" />
+        </div>
+
+        <div className="flex gap-2">
+          <button onClick={onFechar} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
+          <button onClick={salvar} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Salvar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- DetalheCartao — fatura atual, projeção, itens (Fase 7) ---------- */
+function DetalheCartao({ cartao, lancamentos, categorias, onVoltar }) {
+  const faturaAtualChave = chaveMesAtual();
+  const proximas = proximasFaturas(lancamentos, cartao.id, 6);
+  const itens = itensDeFaturaAgrupados(lancamentos, cartao.id);
+  const maiorFatura = Math.max(...proximas.map((f) => f.total), 1);
+
+  return (
+    <div className="h-full overflow-y-auto p-4">
+      <button onClick={onVoltar} className="text-emerald-700 font-semibold text-sm mb-3 tap-target">← Voltar</button>
+      <h3 className="text-lg font-bold text-stone-800 mb-1">{cartao.nome}</h3>
+      <p className="text-xs text-stone-400 mb-4">Fecha dia {cartao.dia_fechamento} · Vence dia {cartao.dia_vencimento}{cartao.limite != null ? ` · Limite ${brl(cartao.limite)}` : ""}</p>
+
+      <div className="bg-white border border-stone-200 rounded-xl p-3 mb-3">
+        <div className="font-semibold text-stone-700 text-sm mb-2">Próximas faturas</div>
+        <div className="space-y-1.5">
+          {proximas.map((f) => (
+            <div key={f.chave} className="flex items-center gap-2">
+              <span className="text-xs text-stone-500 w-16 shrink-0">{nomeDaChaveMes(f.chave).slice(0, 3)}</span>
+              <div className="flex-1 bg-stone-100 rounded-full h-4 overflow-hidden">
+                <div className={`h-4 rounded-full ${f.chave === faturaAtualChave ? "bg-emerald-600" : "bg-stone-300"}`} style={{ width: `${Math.max(4, (f.total / maiorFatura) * 100)}%` }} />
+              </div>
+              <span className="font-mono2 text-xs text-stone-600 w-20 text-right shrink-0">{brl(f.total)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-white border border-stone-200 rounded-xl p-3">
+        <div className="font-semibold text-stone-700 text-sm mb-2">Itens em andamento</div>
+        {!itens.length && <p className="text-xs text-stone-400 text-center py-3">Nenhuma compra nesse cartão ainda.</p>}
+        <div className="space-y-2">
+          {itens.map((it) => {
+            const cat = by(categorias, it.categoriaId);
+            return (
+              <div key={it.id} className="flex items-center justify-between text-sm border-b border-stone-50 pb-2 last:border-0 last:pb-0">
+                <div className="min-w-0">
+                  <div className="text-stone-700 truncate flex items-center gap-1.5">{cat?.icone || "🏷️"} {it.descricao}</div>
+                  <div className="text-xs text-stone-400">{it.unica ? "Compra única" : `Parcela ${it.parcelaTotal - it.parcelasRestantes + 1}/${it.parcelaTotal} · faltam ${it.parcelasRestantes}`}</div>
+                </div>
+                <div className="text-right shrink-0 ml-2">
+                  <div className="font-mono2 font-semibold text-stone-700">{brl(it.valorTotal)}</div>
+                  {!it.unica && <div className="text-xs text-stone-400">faltam {brl(it.valorRestante)}</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- TelaCartoes — Fase 7: lista de cartões + acesso ao detalhe ---------- */
+function TelaCartoes({ cartoes, setCartoes, lancamentos, categorias }) {
+  const [formCartao, setFormCartao] = useState(null);
+  const [cartaoAberto, setCartaoAberto] = useState(null);
+  const [confirmar, setConfirmar] = useState(null);
+
+  function salvarCartao(dados) { setCartoes((cs) => upsertBy(cs, [dados])); setFormCartao(null); }
+  function removerCartao(cartao) {
+    const temLancamento = lancamentos.some((l) => l.cartao_id === cartao.id);
+    setConfirmar({
+      titulo: "Excluir cartão", severo: true, textoConfirmar: "Excluir",
+      mensagem: temLancamento ? `Esse cartão tem compras vinculadas. Excluir "${cartao.nome}" mesmo assim? As compras continuam existindo, só ficam sem o cartão.` : `Excluir "${cartao.nome}"?`,
+      acao: () => { setCartoes((cs) => cs.filter((c) => c.id !== cartao.id)); setConfirmar(null); },
+    });
+  }
+
+  if (cartaoAberto) {
+    const cartaoAtual = cartoes.find((c) => c.id === cartaoAberto);
+    if (!cartaoAtual) { setCartaoAberto(null); return null; }
+    return <DetalheCartao cartao={cartaoAtual} lancamentos={lancamentos} categorias={categorias} onVoltar={() => setCartaoAberto(null)} />;
+  }
+
+  return (
+    <div className="h-full overflow-y-auto p-4">
+      <button onClick={() => setFormCartao({})} className="bg-emerald-700 text-white text-sm font-semibold px-3 py-2 rounded-lg mb-3 tap-target">+ Cartão</button>
+      {!cartoes.length && <p className="text-sm text-stone-400 text-center py-10">Nenhum cartão cadastrado ainda.</p>}
+      <div className="space-y-2">
+        {cartoes.map((c) => {
+          const faturaAtual = proximasFaturas(lancamentos, c.id, 1)[0]?.total || 0;
+          return (
+            <div key={c.id} className="bg-white border border-stone-200 rounded-xl p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <div className="font-semibold text-stone-800">{c.nome}</div>
+                  <div className="text-xs text-stone-400">Fatura atual: <span className="font-mono2 font-semibold text-stone-600">{brl(faturaAtual)}</span></div>
+                </div>
+                <div className="flex gap-3"><button onClick={() => setFormCartao(c)} aria-label={`Editar ${c.nome}`} className="text-stone-400 tap-target">✏️</button><button onClick={() => removerCartao(c)} aria-label={`Excluir ${c.nome}`} className="text-red-400 tap-target">🗑️</button></div>
+              </div>
+              <button onClick={() => setCartaoAberto(c.id)} className="text-xs text-emerald-700 font-semibold tap-target">Ver detalhe →</button>
+            </div>
+          );
+        })}
+      </div>
+
+      {formCartao !== null && <ModalCartao cartao={formCartao.id ? formCartao : null} onSalvar={salvarCartao} onFechar={() => setFormCartao(null)} />}
+      {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
+    </div>
+  );
+}
+
+function TabBarFinancas({ aba, setAba }) {
+  const itens = [{ id: "extrato", label: "Extrato", icon: "📋" }, { id: "metas", label: "Metas", icon: "🎯" }, { id: "cartoes", label: "Cartões", icon: "💳" }, { id: "documentos", label: "Docs", icon: "📄" }, { id: "config", label: "Config", icon: "⚙️" }];
+  return (
+    <div className="flex border-t border-stone-200 bg-white shrink-0">
+      {itens.map((it) => (
+        <button key={it.id} onClick={() => setAba(it.id)} aria-label={it.label} className={`flex-1 flex flex-col items-center gap-1 py-2.5 text-xs font-medium tap-target ${aba === it.id ? "text-emerald-700" : "text-stone-400"}`}>
+          <span className="text-lg leading-none">{it.icon}</span>
+          <span>{it.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ---------- AppFinancas — app-shell do módulo (análogo ao AppMercado) ---------- */
+function AppFinancas({ apiKey, setApiKey, onVoltarHub }) {
+  const [loading, setLoading] = useState(true);
+  const [categorias, setCategorias] = useState(null);
+  const [contas, setContas] = useState([]);
+  const [lancamentos, setLancamentos] = useState([]);
+  const [lancamentosFixos, setLancamentosFixos] = useState([]);
+  const [lembretes5Dias, setLembretes5Dias] = useState([]);
+  const [reflexoesMensais, setReflexoesMensais] = useState({});
+  const [limiar5Dias, setLimiar5Dias] = useState(100);
+  const [metas, setMetas] = useState([]);
+  const [documentos, setDocumentos] = useState([]);
+  const [cartoes, setCartoes] = useState([]);
+  const [gruposOrcamento, setGruposOrcamento] = useState([]);
+  const [rendaManual, setRendaManual] = useState(null);
+  const [aba, setAba] = useState("extrato");
+  const [erroCarregamento, setErroCarregamento] = useState(false);
+  const [erroSalvamento, setErroSalvamento] = useState(false);
+
+  useEffect(() => {
+    const d = loadAllFinancas();
+    setCategorias(d.categorias); setContas(d.contas); setLancamentos(d.lancamentos); setLancamentosFixos(d.lancamentosFixos);
+    setLembretes5Dias(d.lembretes5Dias); setReflexoesMensais(d.reflexoesMensais); setLimiar5Dias(d.limiar5Dias); setMetas(d.metas); setDocumentos(d.documentos); setCartoes(d.cartoes);
+    setGruposOrcamento(d.gruposOrcamento); setRendaManual(d.rendaManual);
+    setErroCarregamento(!!d.houveErroCarregamento);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { if (!loading && categorias) { const ok = persist("fn_categorias", categorias); if (!ok) setErroSalvamento(true); } }, [categorias, loading]);
+  useEffect(() => { if (!loading) { const ok = persist("fn_contas", contas); if (!ok) setErroSalvamento(true); } }, [contas, loading]);
+  useEffect(() => { if (!loading) { const ok = persist("fn_lancamentos", lancamentos); if (!ok) setErroSalvamento(true); } }, [lancamentos, loading]);
+  useEffect(() => { if (!loading) { const ok = persist("fn_lancamentosFixos", lancamentosFixos); if (!ok) setErroSalvamento(true); } }, [lancamentosFixos, loading]);
+  useEffect(() => { if (!loading) { const ok = persist("fn_lembretes5Dias", lembretes5Dias); if (!ok) setErroSalvamento(true); } }, [lembretes5Dias, loading]);
+  useEffect(() => { if (!loading) { const ok = persist("fn_reflexoesMensais", reflexoesMensais); if (!ok) setErroSalvamento(true); } }, [reflexoesMensais, loading]);
+  useEffect(() => { if (!loading) localStorage.setItem("fn_limiar5Dias", String(limiar5Dias)); }, [limiar5Dias, loading]);
+  useEffect(() => { if (!loading) { const ok = persist("fn_metas", metas); if (!ok) setErroSalvamento(true); } }, [metas, loading]);
+  useEffect(() => { if (!loading) { const ok = persist("fn_documentos", documentos); if (!ok) setErroSalvamento(true); } }, [documentos, loading]);
+  useEffect(() => { if (!loading) { const ok = persist("fn_cartoes", cartoes); if (!ok) setErroSalvamento(true); } }, [cartoes, loading]);
+  useEffect(() => { if (!loading && gruposOrcamento.length) { const ok = persist("fn_gruposOrcamento", gruposOrcamento); if (!ok) setErroSalvamento(true); } }, [gruposOrcamento, loading]);
+  useEffect(() => { if (!loading) { if (rendaManual == null) localStorage.removeItem("fn_rendaManual"); else localStorage.setItem("fn_rendaManual", String(rendaManual)); } }, [rendaManual, loading]);
+
+  /* Ao salvar um lançamento marcado como recorrente, garante um id de fixo estável — usa o que já
+     veio (confirmando um previsto, ou editando um recorrente existente) ou cria um novo na primeira
+     vez — e grava o LANÇAMENTO REAL já vinculado a esse id (senão o mesmo mês voltaria a aparecer
+     como "previsto" de novo, por não achar nenhum lançamento real ligado ao fixo). */
+  const salvarLancamentosComFixo = (dadosOriginais) => {
+    if (Array.isArray(dadosOriginais)) {
+      // série de parcelas (Fase 7) — não passa pela lógica de recorrente, que é outro conceito
+      setLancamentos((ls) => upsertBy(ls, dadosOriginais));
+      return;
+    }
+    let dados = dadosOriginais;
+    if (dados.recorrente) {
+      const fixoId = dados.origem_fixo_id || uid();
+      dados = { ...dados, origem_fixo_id: fixoId };
+      setLancamentosFixos((fs) => upsertBy(fs, [{ ...dados, id: fixoId }]));
+    }
+    setLancamentos((ls) => upsertBy(ls, [dados]));
+  };
+  function removerLancamentoReal(id) {
+    setLancamentos((ls) => ls.filter((l) => l.id !== id));
+  }
+  /* Fase 3 — teste dos 5 dias: guarda como lembrete, NÃO cria lançamento real ainda. */
+  function adiarLancamento5Dias(dados) {
+    const dataLembrete = new Date();
+    dataLembrete.setDate(dataLembrete.getDate() + 5);
+    setLembretes5Dias((ls) => [...ls, { ...dados, id: uid(), data_lembrete: dataLembrete.toISOString() }]);
+  }
+  function confirmarLembrete(lembrete) {
+    const { id, data_lembrete, ...dadosLancamento } = lembrete;
+    salvarLancamentosComFixo({ ...dadosLancamento, id: uid(), data: new Date().toISOString() });
+    setLembretes5Dias((ls) => ls.filter((l) => l.id !== lembrete.id));
+  }
+  function descartarLembrete(id) {
+    setLembretes5Dias((ls) => ls.filter((l) => l.id !== id));
+  }
+  function salvarReflexao(chaveMes, dados) {
+    setReflexoesMensais((r) => ({ ...r, [chaveMes]: dados }));
+  }
+  /* Seção 14 do mapa: importa em lote, cada transação entra sem categoria (pendente). */
+  function importarTransacoes(transacoes, contaId) {
+    const novos = transacoes.map((t) => ({
+      id: uid(), tipo: t.tipo, descricao: t.descricao, categoria_id: null, valor: t.valor, data: t.data,
+      fixa: false, recorrente: false, dia_recorrencia: null, forma_pagamento: null,
+      conta_id: contaId, origem_fixo_id: null, documento_id: null,
+    }));
+    setLancamentos((ls) => [...ls, ...novos]);
+  }
+  /* Resolve um lançamento pendente — categoria normal, ou vínculo com meta (achado da seção 14.6:
+     "Dinheiro reservado/retirado" do Mercado Pago é aporte/retirada de caixinha, não gasto comum).
+     Direção do ajuste na meta usa o sinal que a própria transação já trouxe do banco: despesa =
+     dinheiro indo pra reserva (soma), receita = dinheiro voltando da reserva (subtrai). */
+  function resolverPendente(dados) {
+    if (dados.resolverComoMeta) {
+      const criandoNova = !!dados.metaNovaNome;
+      const metaId = criandoNova ? uid() : dados.metaIdEscolhida;
+      const delta = dados.tipo === "despesa" ? dados.valor : -dados.valor;
+      setMetas((ms) => {
+        if (criandoNova) return [...ms, { id: metaId, nome: dados.metaNovaNome, icone: "🎯", valor_alvo: Math.max(dados.valor, 100), valor_guardado: Math.max(0, delta) }];
+        return ms.map((m) => (m.id === metaId ? { ...m, valor_guardado: Math.max(0, m.valor_guardado + delta) } : m));
+      });
+      const { resolverComoMeta, metaIdEscolhida, metaNovaNome, ...resto } = dados;
+      salvarLancamentosComFixo({ ...resto, categoria_id: "catfn_aporte_meta" });
+      return;
+    }
+    salvarLancamentosComFixo(dados);
+  }
+
+  if (loading || !categorias) return (
+    <div className="h-screen flex flex-col items-center justify-center bg-stone-100 text-stone-400 gap-2 max-w-md mx-auto">
+      <div>Carregando…</div>
+    </div>
+  );
+
+  return (
+    <div className="h-screen flex flex-col bg-stone-100 max-w-md mx-auto">
+      <div className="bg-emerald-800 text-white px-4 pt-4 pb-3 shrink-0 flex items-center gap-3">
+        <button onClick={onVoltarHub} aria-label="Voltar ao início" className="tap-target text-emerald-200 text-xl">←</button>
+        <div className="font-bold text-xl">💰 Finanças</div>
+      </div>
+
+      {erroCarregamento && (
+        <div className="bg-red-600 text-white text-xs p-2 shrink-0">⚠️ Alguns dados salvos não puderam ser lidos (parecem corrompidos).</div>
+      )}
+      {erroSalvamento && (
+        <div className="bg-red-600 text-white text-xs p-2 flex items-center justify-between gap-2 shrink-0">
+          <span>⚠️ Sua última alteração não foi salva (armazenamento cheio).</span>
+          <button onClick={() => setErroSalvamento(false)} className="underline font-semibold shrink-0 tap-target">Ok</button>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-hidden">
+        {aba === "extrato" && (
+          <TelaExtrato
+            categorias={categorias} contas={contas}
+            lancamentos={lancamentos} onSalvarLancamento={salvarLancamentosComFixo} onRemoverLancamento={removerLancamentoReal}
+            lancamentosFixos={lancamentosFixos} setLancamentosFixos={setLancamentosFixos}
+            lembretes5Dias={lembretes5Dias} limiar5Dias={limiar5Dias} onAdiar5Dias={adiarLancamento5Dias}
+            onConfirmarLembrete={confirmarLembrete} onDescartarLembrete={descartarLembrete}
+            reflexoesMensais={reflexoesMensais} onSalvarReflexao={salvarReflexao}
+            metas={metas} cartoes={cartoes} gruposOrcamento={gruposOrcamento} rendaManual={rendaManual} onResolverPendente={resolverPendente}
+            onAbrirConfig={() => setAba("config")}
+          />
+        )}
+        {aba === "metas" && (
+          <TelaMetas metas={metas} setMetas={setMetas} contas={contas} onAporteComoDespesa={salvarLancamentosComFixo} />
+        )}
+        {aba === "cartoes" && (
+          <TelaCartoes cartoes={cartoes} setCartoes={setCartoes} lancamentos={lancamentos} categorias={categorias} />
+        )}
+        {aba === "documentos" && (
+          <TelaDocumentos documentos={documentos} setDocumentos={setDocumentos} lancamentos={lancamentos} onSalvarLancamento={salvarLancamentosComFixo} categorias={categorias} contas={contas} />
+        )}
+        {aba === "config" && (
+          <TelaConfigFinancas categorias={categorias} setCategorias={setCategorias} contas={contas} setContas={setContas} lancamentos={lancamentos} lancamentosFixos={lancamentosFixos} limiar5Dias={limiar5Dias} setLimiar5Dias={setLimiar5Dias} onImportarExtrato={importarTransacoes} gruposOrcamento={gruposOrcamento} setGruposOrcamento={setGruposOrcamento} rendaManual={rendaManual} setRendaManual={setRendaManual} />
+        )}
+      </div>
+      <TabBarFinancas aba={aba} setAba={setAba} />
+    </div>
+  );
+}

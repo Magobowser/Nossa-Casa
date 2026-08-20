@@ -6,11 +6,21 @@
       cacheado, nunca ia na rede buscar versão nova de novo, mesmo com o worker atualizado.
       Agora o HTML é sempre network-first (busca versão nova sempre que possível, só cai pro
       cache se estiver offline). O resto (bibliotecas externas, ícones, manifest) continua
-      cache-first — muda raramente, e isso ajuda o app a funcionar offline. */
+      cache-first — muda raramente, e isso ajuda o app a funcionar offline.
+   v4 (seção 33.3 do mapa): dois problemas a mais, achados depois de um erro de sintaxe
+   persistir mesmo após reenviar o arquivo corrigido:
+   3) mercado.js/financas.js agora carregam com "?v=VERSAO" na URL (quebra-cache — força
+      qualquer camada de cache, navegador ou CDN do GitHub, a tratar como arquivo novo a cada
+      versão). Isso quebrou a checagem antiga (`url.endsWith(".js")`), que não batia mais numa
+      URL terminando em "?v=...". Corrigido pra usar `new URL(...).pathname`, que ignora a
+      query string.
+   4) "Network-first" no nível do service worker não impedia o `fetch()` por baixo de ainda
+      respeitar o cache HTTP normal do navegador (uma camada abaixo do SW). Adicionado
+      `cache: "no-store"` explícito pra código próprio do app, fechando essa brecha. */
 
-const CACHE_NAME = "nossa-casa-v4";
+const CACHE_NAME = "nossa-casa-v6";
 const ARQUIVOS_DO_APP = [
-  "./", "./index.html", "./mercado.js", "./manifest.json", "./icon-192.png", "./icon-512.png",
+  "./", "./index.html", "./mercado.js", "./financas.js", "./manifest.json", "./icon-192.png", "./icon-512.png",
   "https://cdn.tailwindcss.com",
   "https://unpkg.com/react@18/umd/react.production.min.js",
   "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
@@ -22,8 +32,6 @@ const ARQUIVOS_DO_APP = [
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
-      /* adiciona um por um — se algum falhar (ex: sem sinal nesse instante),
-         os outros continuam sendo guardados, em vez de tudo falhar junto */
       await Promise.allSettled(ARQUIVOS_DO_APP.map((url) => cache.add(url).catch(() => {})));
     })
   );
@@ -37,33 +45,26 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-/* BUG 1 corrigido: sem isso, o "SKIP_WAITING" que o index.html manda nunca era recebido,
-   e o worker novo ficava esperando pra sempre em vez de assumir. */
 self.addEventListener("message", (event) => {
   if (event.data === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
-  /* preço por IA nunca passa pelo cache — precisa ser sempre uma busca ao vivo */
   if (event.request.url.includes("api.anthropic.com")) return;
 
-  /* Seção 32 do mapa: HTML e código-fonte próprio do app (mercado.js, e futuros módulos como
-     financas.js) precisam SEMPRE andar na mesma versão — nunca pode buscar index.html novo mas
-     servir um mercado.js velho do cache, ou vice-versa. Por isso os dois entram como network-first.
-     Só bibliotecas de terceiros (CDN) continuam cache-first — essas raramente mudam de versão. */
+  const url = new URL(event.request.url);
+
   const ehCodigoProprioDoApp =
     event.request.mode === "navigate" ||
     event.request.destination === "document" ||
-    event.request.url.endsWith("/") ||
-    event.request.url.endsWith("index.html") ||
-    (event.request.url.endsWith(".js") && event.request.url.startsWith(self.location.origin));
+    url.pathname.endsWith("/") ||
+    url.pathname.endsWith("index.html") ||
+    (url.pathname.endsWith(".js") && url.origin === self.location.origin);
 
   if (ehCodigoProprioDoApp) {
-    /* Network-first: sempre tenta buscar a versão mais nova primeiro, e só usa o cache
-       como reserva se estiver offline. */
     event.respondWith(
-      fetch(event.request)
+      fetch(event.request, { cache: "no-store" })
         .then((resposta) => {
           if (resposta.ok) {
             const copia = resposta.clone();
@@ -76,8 +77,6 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  /* Resto do app (bibliotecas de terceiros via CDN, ícones, manifest): cache-first, com
-     atualização em segundo plano — raramente muda, e cache-first ajuda no offline e na velocidade. */
   event.respondWith(
     caches.match(event.request).then((cacheada) => {
       const buscaNaRede = fetch(event.request)

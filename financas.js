@@ -786,6 +786,11 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
   const [dadosPendentesTeste5Dias, setDadosPendentesTeste5Dias] = useState(null);
   const [documentoAnexadoId, setDocumentoAnexadoId] = useState(lancamento?.documento_id || documentoId || null);
   const [anexando, setAnexando] = useState(false);
+  /* Pedido do usuário: ao anexar um documento (foto/PDF) num lançamento já existente, se o valor
+     lido do documento divergir do valor já salvo, não anexa direto — pergunta se é a mesma
+     compra, e se sim, se quer ajustar pro valor do documento. Fica marcado (⚠️) até resolver. */
+  const [marcadoDivergente, setMarcadoDivergente] = useState(lancamento?.valor_divergente || false);
+  const [pendenteAnexo, setPendenteAnexo] = useState(null); // { file, tipoDocumento, valorDocumento, valorAtual, etapa }
 
   /* Pedido do usuário: lançamento vindo de uma compra do Mercado não pode ter valor nem
      nota/comprovante mexidos direto aqui — só descrição, forma de pagamento, conta e categoria
@@ -831,14 +836,68 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
     setTimeout(() => { valorInputRef.current?.focus(); valorInputRef.current?.select(); }, 50);
   }
 
+  /* Lê o valor de dentro do arquivo — PDF usa texto embutido (mais confiável), foto usa OCR.
+     Tenta primeiro o padrão de "cluster" de totais (achado testando DANFE real do Mercado: em
+     nota com desconto, o pdf.js separa rótulo e valor longe um do outro, e "Valor Total dos
+     Produtos" ≠ "Valor a Pagar" — sem isso, pegava o valor bruto errado). Cai pra busca genérica
+     por palavra-chave se não achar esse padrão (documentos que não são DANFE). Se não conseguir
+     achar nada, retorna null (o chamador trata como "sem base pra comparar"). */
+  async function extrairValorDoArquivo(file) {
+    try {
+      let texto;
+      if (file.type === "application/pdf") {
+        const arrayBuffer = await file.arrayBuffer();
+        texto = await extrairTextoDoPdf(arrayBuffer);
+      } else {
+        const Tesseract = await carregarTesseract();
+        const resultado = await Tesseract.recognize(file, "por");
+        texto = resultado.data.text;
+      }
+      const cluster = texto.match(/Consulta:.*?(\d+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+Valor pago/);
+      if (cluster) return numDe(cluster[4]);
+      return extrairTotalDoTextoOcr(texto);
+    } catch (e) { return null; }
+  }
+
   async function aoEscolherComprovante(e) {
     const file = e.target.files[0];
     e.target.value = "";
     if (!file || !onAnexarDocumento) return;
     setAnexando(true);
     try {
-      const novoId = await onAnexarDocumento(file, tipo === "receita" ? "entrada" : "saida");
+      const tipoDocumento = tipo === "receita" ? "entrada" : "saida";
+      const valorAtual = parseValorFinanceiro(valorTexto);
+      const valorDocumento = await extrairValorDoArquivo(file);
+      const divergente = valorAtual != null && valorDocumento != null && Math.abs(valorAtual - valorDocumento) >= 0.01;
+      if (divergente) {
+        setPendenteAnexo({ file, tipoDocumento, valorDocumento, valorAtual, etapa: "confirmar_mesma_compra" });
+        setAnexando(false);
+        return;
+      }
+      const novoId = await onAnexarDocumento(file, tipoDocumento);
       setDocumentoAnexadoId(novoId);
+      setMarcadoDivergente(false);
+    } catch (err) {
+      alert("Não consegui anexar esse arquivo: " + err.message);
+    } finally {
+      setAnexando(false);
+    }
+  }
+
+  async function concluirAnexoPendente(ajustarValor) {
+    const p = pendenteAnexo;
+    if (!p) return;
+    setPendenteAnexo(null);
+    setAnexando(true);
+    try {
+      const novoId = await onAnexarDocumento(p.file, p.tipoDocumento);
+      setDocumentoAnexadoId(novoId);
+      if (ajustarValor) {
+        setValorTexto(formatarValorCampo(p.valorDocumento));
+        setMarcadoDivergente(false);
+      } else {
+        setMarcadoDivergente(true);
+      }
     } catch (err) {
       alert("Não consegui anexar esse arquivo: " + err.message);
     } finally {
@@ -860,7 +919,7 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
       const numParcelas = Math.max(1, numDe(numParcelasTexto) || 1);
       const serie = gerarLancamentosParcelados({ descricao: descricao.trim(), categoria_id: categoriaId, valorTotal: valor, data, conta_id: contaId }, cartaoEscolhido, numParcelas);
       if (numParcelas > 1) { onSalvar(serie); return; }
-      const dadosUnico = { ...serie[0], documento_id: documentoAnexadoId };
+      const dadosUnico = { ...serie[0], documento_id: documentoAnexadoId, valor_divergente: marcadoDivergente };
       const elegivel = !lancamento && !fixa && valor >= limiar5Dias;
       if (elegivel) { setDadosPendentesTeste5Dias(dadosUnico); return; }
       onSalvar(dadosUnico);
@@ -878,6 +937,7 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
       conta_id: contaId,
       origem_fixo_id: lancamento?.origem_fixo_id || null,
       documento_id: documentoAnexadoId,
+      valor_divergente: marcadoDivergente,
     };
     /* Teste dos 5 dias (Fase 3, seção 12 do mapa): só pra despesa variável nova, acima do limiar
        configurado — nunca em edição de algo que já existia, nunca em receita ou gasto fixo. */
@@ -1057,6 +1117,12 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
               Comprovante / nota fiscal
               {origemMercadoSessaoId && <span className="text-[10px] normal-case font-normal text-stone-400">🔒 vem do Mercado</span>}
             </label>
+            {marcadoDivergente && !origemMercadoSessaoId && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 mt-1 mb-1.5 text-xs text-amber-800 flex items-center justify-between gap-2">
+                <span>⚠️ O valor desse lançamento não bate com o documento anexado.</span>
+                <button onClick={() => setMarcadoDivergente(false)} className="underline shrink-0 tap-target">já está certo</button>
+              </div>
+            )}
             {origemMercadoSessaoId ? (
               <button onClick={pedirEdicaoNoMercado} className="w-full flex items-center gap-2 mt-1 bg-stone-50 border border-stone-200 rounded-lg p-2.5 text-sm text-stone-500 tap-target">
                 <span>{documentoAnexadoId ? "✓ Documento anexado (pelo Mercado)" : "Sem documento"}</span>
@@ -1086,6 +1152,36 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
             onConfirmar={irEditarNoMercado}
             onCancelar={() => setConfirmarEditarMercado(false)}
           />
+        )}
+
+        {pendenteAnexo?.etapa === "confirmar_mesma_compra" && (
+          <div className="fixed inset-0 bg-black/50 flex items-end justify-center z-[80]" onClick={() => setPendenteAnexo(null)}>
+            <div className="bg-white rounded-t-2xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-lg font-bold mb-3">⚠️ Valores diferentes</h3>
+              <div className="bg-stone-50 rounded-xl p-3 mb-4 text-sm space-y-1.5">
+                <div className="flex justify-between"><span className="text-stone-500">Lançamento:</span><span className="font-mono2 font-semibold">{brl(pendenteAnexo.valorAtual)}</span></div>
+                <div className="flex justify-between"><span className="text-stone-500">Documento:</span><span className="font-mono2 font-semibold">{brl(pendenteAnexo.valorDocumento)}</span></div>
+              </div>
+              <p className="text-sm text-stone-600 mb-4">É a mesma compra?</p>
+              <div className="flex gap-2">
+                <button onClick={() => setPendenteAnexo(null)} className="flex-1 py-2.5 rounded-lg border border-stone-300 text-stone-600 font-semibold tap-target">Não</button>
+                <button onClick={() => setPendenteAnexo((p) => ({ ...p, etapa: "confirmar_ajustar" }))} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Sim</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {pendenteAnexo?.etapa === "confirmar_ajustar" && (
+          <div className="fixed inset-0 bg-black/50 flex items-end justify-center z-[80]" onClick={() => setPendenteAnexo(null)}>
+            <div className="bg-white rounded-t-2xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-lg font-bold mb-3">Ajustar o valor?</h3>
+              <p className="text-sm text-stone-600 mb-4">Quer corrigir o lançamento pro valor do documento ({brl(pendenteAnexo.valorDocumento)})?</p>
+              <div className="flex flex-col gap-2">
+                <button onClick={() => concluirAnexoPendente(true)} className="w-full py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Sim, ajustar pro valor do documento</button>
+                <button onClick={() => concluirAnexoPendente(false)} className="w-full py-2.5 rounded-lg border border-stone-300 text-stone-600 font-semibold tap-target">Não, manter como está</button>
+              </div>
+            </div>
+          </div>
         )}
 
         <div className="flex gap-2 mt-2">
@@ -1229,7 +1325,10 @@ function ModalDetalheLancamento({ item, categoria, conta, documento, onEditar, o
           <span className="text-2xl shrink-0">{categoria?.icone || "🏷️"}</span>
           <h3 className="text-lg font-bold text-stone-800">{item.descricao}</h3>
         </div>
-        <div className={`font-mono2 font-bold text-2xl mb-4 ${cor}`}>{sinal} {brl(item.valor)}</div>
+        <div className={`font-mono2 font-bold text-2xl ${item.valor_divergente ? "mb-1" : "mb-4"} ${cor}`}>{sinal} {brl(item.valor)}</div>
+        {item.valor_divergente && (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-3 text-xs text-amber-800">⚠️ Esse valor não bate com o documento anexado — toca em "✏️ Editar" pra rever.</div>
+        )}
 
         <div className="space-y-2 text-sm bg-stone-50 rounded-lg p-3 mb-4">
           <div className="flex justify-between"><span className="text-stone-400">Data</span><span className="text-stone-700">{dataCurta(item.data)}</span></div>
@@ -1266,6 +1365,7 @@ function LinhaLancamento({ item, categoria, nomeConta, onAbrir }) {
           <div className="font-semibold text-stone-800 truncate flex items-center gap-1.5">
             {item.descricao}
             {item.previsto && <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-medium">previsto</span>}
+            {item.valor_divergente && <span title="Valor diverge do documento anexado">⚠️</span>}
           </div>
           <div className="text-xs text-stone-400">{dataCurta(item.data)}{categoria ? " · " + categoria.nome : ""}{nomeConta ? " · " + nomeConta : ""}</div>
         </div>

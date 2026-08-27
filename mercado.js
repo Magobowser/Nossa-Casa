@@ -4806,23 +4806,28 @@ function GraficoCategorias({ entradas, tituloVazio = "Sem gastos ainda", tipoIni
           </button>
         </div>
       ) : (
-        <div className="flex items-center gap-4 py-1">
-          <svg width="110" height="110" viewBox="0 0 120 120" className="shrink-0">
-            <g transform="rotate(-90 60 60)">
-              {(() => {
-                const raio = 45, circunferencia = 2 * Math.PI * raio;
-                let acumulado = 0;
-                return entradas.map((e) => {
-                  const fracao = e.valor / total;
-                  const comprimento = fracao * circunferencia;
-                  const offset = -acumulado * circunferencia;
-                  acumulado += fracao;
-                  return <circle key={e.nome} cx="60" cy="60" r={raio} fill="none" stroke={e.cor} strokeWidth="22" strokeDasharray={`${comprimento} ${circunferencia - comprimento}`} strokeDashoffset={offset} />;
-                });
-              })()}
-            </g>
-          </svg>
-          <div className="flex-1 min-w-0 text-xs text-stone-400">Total: <b className="font-mono2 text-stone-700">{brl(total)}</b></div>
+        <div className="flex items-center justify-center py-1">
+          <div className="relative shrink-0" style={{ width: 130, height: 130 }}>
+            <svg width="130" height="130" viewBox="0 0 120 120">
+              <g transform="rotate(-90 60 60)">
+                {(() => {
+                  const raio = 45, circunferencia = 2 * Math.PI * raio;
+                  let acumulado = 0;
+                  return entradas.map((e) => {
+                    const fracao = e.valor / total;
+                    const comprimento = fracao * circunferencia;
+                    const offset = -acumulado * circunferencia;
+                    acumulado += fracao;
+                    return <circle key={e.nome} cx="60" cy="60" r={raio} fill="none" stroke={e.cor} strokeWidth="22" strokeDasharray={`${comprimento} ${circunferencia - comprimento}`} strokeDashoffset={offset} />;
+                  });
+                })()}
+              </g>
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+              <span className="text-[10px] text-stone-400">Total</span>
+              <span className="font-mono2 font-bold text-stone-800 text-sm text-center px-2">{brl(total)}</span>
+            </div>
+          </div>
         </div>
       )}
 
@@ -4830,7 +4835,10 @@ function GraficoCategorias({ entradas, tituloVazio = "Sem gastos ainda", tipoIni
         <div className="mt-2 space-y-1 pb-1">
           {ordenadas.map((e) => (
             <div key={e.nome} className="flex items-center justify-between text-xs">
-              <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: e.cor }} />{e.nome}</span>
+              <span className="flex items-center gap-1.5">
+                {e.icone ? <span className="shrink-0">{e.icone}</span> : <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: e.cor }} />}
+                {e.nome}
+              </span>
               <span className="font-mono2 text-stone-600">{brl(e.valor)} · {((e.valor / total) * 100).toFixed(0)}%</span>
             </div>
           ))}
@@ -4842,11 +4850,14 @@ function GraficoCategorias({ entradas, tituloVazio = "Sem gastos ainda", tipoIni
 function entradasGraficoDe(porCategoriaObj, catalogo) {
   return Object.entries(porCategoriaObj).map(([nome, valor], i) => {
     const cat = catalogo.categorias.find((c) => c.nome === nome);
-    return { nome, valor, cor: cat ? corCategoria(cat.id, catalogo.categorias) : CORES_CATEGORIA[i % CORES_CATEGORIA.length] };
+    return { nome, valor, cor: cat ? corCategoria(cat.id, catalogo.categorias) : CORES_CATEGORIA[i % CORES_CATEGORIA.length], icone: cat?.icone };
   });
 }
 function entradasGraficoDeSnapshot(snapshot, catalogo) {
-  return (snapshot || []).map((s) => ({ nome: s.nome, valor: s.valor, cor: corCategoria(s.categoria_id, catalogo.categorias) }));
+  return (snapshot || []).map((s) => {
+    const cat = catalogo.categorias.find((c) => c.id === s.categoria_id);
+    return { nome: s.nome, valor: s.valor, cor: corCategoria(s.categoria_id, catalogo.categorias), icone: cat?.icone };
+  });
 }
 
 /* =========================================================

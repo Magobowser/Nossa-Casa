@@ -289,7 +289,8 @@ async function extrairTextoDePdf(arrayBuffer) {
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-    textoCompleto += content.items.map((it) => it.str).join(" ") + "\n";
+    const linhas = itensPdfEmLinhas(content.items); // compartilhada com financas.js — seção sobre leitura de PDF embaralhada
+    textoCompleto += linhas.map((linha) => linha.map((it) => it.texto).join(" ")).join("\n") + "\n";
   }
   return textoCompleto;
 }
@@ -300,6 +301,45 @@ async function extrairTextoDePdf(arrayBuffer) {
    colar manualmente se o preenchimento automático não pegar. */
 function montarUrlMeuDanfe(chave) {
   return `https://meudanfe.com.br/?chave=${chave}`;
+}
+/* Pedido do usuário: em vez de tentar buscar a página da Sefaz automaticamente (bloqueada por
+   IP tanto pra automação quanto, às vezes, pro próprio usuário — é anti-fraude do governo, não
+   dá pra contornar), a PESSOA abre o link no navegador dela mesma (não é um robô, não cai no
+   bloqueio), copia o texto da página inteira, e cola de volta aqui — o app remonta os dados
+   sozinho. Link oficial do governo (não terceiro) sempre que a chave veio de um QR de verdade
+   (guarda a URL original do QR, que já é o link certo); pra chave digitada na mão, manda pra
+   página geral de consulta por chave. */
+function montarUrlConsultaOficial(chaveDoQr) {
+  if (chaveDoQr?.url) return chaveDoQr.url; // URL original do QR, já é o link certo e completo
+  return "https://www.fazenda.rj.gov.br/nfce/consulta"; // chave digitada na mão — sem URL de QR, manda pra busca geral
+}
+/* Testado contra o texto real copiado da página de consulta da Sefaz-RJ (22 itens, bateu 100%
+   com a soma "Valor total R$"). Formato por item, sempre 3 linhas:
+     NOME (Código: 12345 )
+     Qtde.:1  UN: UN  Vl. Unit.:   9,99 	Vl. Total
+     9,99
+   Produz a MESMA forma que parsearDanfePdf, pra reaproveitar a tela de conferência inteira. */
+function parsearTextoConsultaNFCe(texto) {
+  const regexItem = /(.+?)\s*\(Código:\s*(\d+)\s*\)\s*\nQtde\.:\s*([\d,]+)\s+UN:\s*(\S+)\s+Vl\.\s*Unit\.:\s*([\d,]+)\s*[\t ]*Vl\.\s*Total\s*\n\s*([\d,]+)/g;
+  const itens = [];
+  let m;
+  while ((m = regexItem.exec(texto)) !== null) {
+    itens.push({ id: uid(), descricao: m[1].trim(), quantidade: numDe(m[3]), valor_unitario: numDe(m[5]), valor_total: numDe(m[6]), vinculado_item_id: null, ignorado: false });
+  }
+  if (!itens.length) throw new Error("Não consegui achar itens nesse texto — confere se colou a página inteira (do nome do mercado até a chave de acesso).");
+
+  const somaItens = itens.reduce((a, it) => a + (it.valor_total || 0), 0);
+  const valorPagarMatch = texto.match(/Valor a pagar R\$:\s*([\d,]+)/);
+  const valorTotal = valorPagarMatch ? numDe(valorPagarMatch[1]) : somaItens;
+
+  const chaveMatch = texto.match(/Chave de acesso:\s*\n?\s*([\d\s]{40,})/) || texto.match(/(\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4})/);
+  const chaveAcesso = chaveMatch ? chaveMatch[1].replace(/\s+/g, "") : null;
+  if (!chaveAcesso || chaveAcesso.length !== 44) throw new Error("Achei os itens, mas não consegui achar a chave de acesso de 44 números — confere se colou o texto até o final da página.");
+
+  const nomeMatch = texto.match(/DOCUMENTO AUXILIAR.*?\n+(.+?)\s*\nCNPJ:/s);
+  const cnpjMatch = texto.match(/CNPJ:\s*([\d.\/-]+)/);
+
+  return { chave_acesso: chaveAcesso, cnpj_emit: cnpjMatch ? cnpjMatch[1] : null, nome_emit: nomeMatch ? nomeMatch[1].trim() : null, data_emissao: null, valor_total: valorTotal, itens };
 }
 /* Reserva pro scanner (seção 30): Safari/iOS não tem BarcodeDetector nativo — nenhum navegador
    no iPhone tem, é regra da Apple todo navegador ali usar o motor do Safari por baixo. A ZXing
@@ -6501,6 +6541,19 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
     setChaveDigitada("");
   }
   const [lendoOcr, setLendoOcr] = useState(false);
+  const [colandoTexto, setColandoTexto] = useState(false);
+  const [textoColado, setTextoColado] = useState("");
+  function processarTextoColado() {
+    try {
+      const nfeLida = parsearTextoConsultaNFCe(textoColado);
+      const duplicada = sessaoComMesmaNfe(sessoes, nfeLida.chave_acesso, sessao.id);
+      if (duplicada) { setErroNfe("Essa nota já foi anexada numa outra compra do histórico."); return; }
+      setErroNfe(null);
+      setNfeParaConferir(nfeLida);
+      setColandoTexto(false);
+      setTextoColado("");
+    } catch (err) { setErroNfe(err.message); }
+  }
   const mercado = by(catalogo.mercados, sessao.mercado_id);
   const nota = sessao.nfe?.conferida ? sessao.nfe.valor_total : parsePrecoInteligente(notaTexto);
   const diferenca = nota != null ? nota - totalCalc : null;
@@ -6664,18 +6717,33 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
                   </div>
                 )}
                 {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
-                {chaveDoQr && (
+                {chaveDoQr && !colandoTexto && (
                   <div className="bg-stone-50 rounded-lg p-2.5 mt-2 text-xs">
-                    <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. O XML não dá pra baixar direto por aqui — abre o Meu Danfe (já com a chave preenchida), baixa de lá, depois volta e anexa o arquivo.</div>
-                    <button onClick={() => window.open(montarUrlMeuDanfe(chaveDoQr.chave), "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir Meu Danfe →</button>
+                    <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. Duas formas de trazer os dados: abre a consulta oficial, seleciona tudo (Ctrl+A) e copia — ou baixa o PDF pelo Meu Danfe.</div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-1">
+                      <button onClick={() => window.open(montarUrlConsultaOficial(chaveDoQr), "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir consulta oficial →</button>
+                      <button onClick={() => setColandoTexto(true)} className="text-emerald-700 font-semibold underline tap-target">Já copiei, colar aqui →</button>
+                      <button onClick={() => window.open(montarUrlMeuDanfe(chaveDoQr.chave), "_blank")} className="text-stone-400 underline tap-target">Baixar PDF (Meu Danfe)</button>
+                    </div>
                     <div className="flex items-center gap-2 mt-2 pt-2 border-t border-stone-200">
                       <span className="font-mono2 text-[11px] text-stone-400 flex-1 truncate">{chaveDoQr.chave}</span>
                       <button onClick={() => navigator.clipboard?.writeText(chaveDoQr.chave)} className="text-emerald-700 font-semibold shrink-0 tap-target">Copiar chave</button>
                     </div>
                   </div>
                 )}
+                {colandoTexto && (
+                  <div className="bg-stone-50 rounded-lg p-2.5 mt-2">
+                    <p className="text-xs text-stone-500 mb-2">Cola aqui o texto inteiro que você copiou da página (do nome do mercado até a chave de acesso).</p>
+                    <textarea value={textoColado} onChange={(e) => setTextoColado(e.target.value)} rows={4} placeholder="Cola aqui (Ctrl+V)..." className="w-full border border-stone-300 rounded-lg p-2 text-xs font-mono2" aria-label="Texto colado da consulta da nota" />
+                    <div className="flex gap-2 mt-2">
+                      <button onClick={() => { setColandoTexto(false); setTextoColado(""); }} className="flex-1 py-2 rounded-lg border border-stone-300 text-stone-600 text-xs font-semibold tap-target">Cancelar</button>
+                      <button onClick={processarTextoColado} disabled={!textoColado.trim()} className="flex-1 py-2 rounded-lg bg-emerald-700 text-white text-xs font-semibold tap-target disabled:opacity-40">Ler itens</button>
+                    </div>
+                  </div>
+                )}
                 <p className="text-xs text-stone-400 mt-2">Sem QR nem XML? <button onClick={() => setLendoOcr(true)} className="text-emerald-700 font-semibold underline tap-target">Ler o total por foto</button>, ou preencha manualmente abaixo.</p>
               </>
+
             )}
           </div>
 
@@ -6995,6 +7063,19 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
     setChaveDigitada("");
   }
   const [lendoOcr, setLendoOcr] = useState(false);
+  const [colandoTexto, setColandoTexto] = useState(false);
+  const [textoColado, setTextoColado] = useState("");
+  function processarTextoColado() {
+    try {
+      const nfeLida = parsearTextoConsultaNFCe(textoColado);
+      const duplicada = sessaoComMesmaNfe(sessoes, nfeLida.chave_acesso, sessao.id);
+      if (duplicada) { setErroNfe("Essa nota já foi anexada numa outra compra do histórico."); return; }
+      setErroNfe(null);
+      setNfeParaConferir(nfeLida);
+      setColandoTexto(false);
+      setTextoColado("");
+    } catch (err) { setErroNfe(err.message); }
+  }
 
   const entradasGrafico = sessao.grafico_categorias && sessao.grafico_categorias.length
     ? entradasGraficoDeSnapshot(sessao.grafico_categorias, catalogo)
@@ -7126,13 +7207,27 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
                 </div>
               )}
               {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
-              {chaveDoQr && (
+              {chaveDoQr && !colandoTexto && (
                 <div className="bg-stone-50 rounded-lg p-2.5 mt-2 text-xs">
-                  <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. Abre o Meu Danfe (já com a chave preenchida), baixa o XML de lá, e depois anexa o arquivo aqui.</div>
-                  <button onClick={() => window.open(montarUrlMeuDanfe(chaveDoQr.chave), "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir Meu Danfe →</button>
+                  <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. Duas formas de trazer os dados: abre a consulta oficial, seleciona tudo (Ctrl+A) e copia — ou baixa o PDF pelo Meu Danfe.</div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1">
+                    <button onClick={() => window.open(montarUrlConsultaOficial(chaveDoQr), "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir consulta oficial →</button>
+                    <button onClick={() => setColandoTexto(true)} className="text-emerald-700 font-semibold underline tap-target">Já copiei, colar aqui →</button>
+                    <button onClick={() => window.open(montarUrlMeuDanfe(chaveDoQr.chave), "_blank")} className="text-stone-400 underline tap-target">Baixar PDF (Meu Danfe)</button>
+                  </div>
                   <div className="flex items-center gap-2 mt-2 pt-2 border-t border-stone-200">
                     <span className="font-mono2 text-[11px] text-stone-400 flex-1 truncate">{chaveDoQr.chave}</span>
                     <button onClick={() => navigator.clipboard?.writeText(chaveDoQr.chave)} className="text-emerald-700 font-semibold shrink-0 tap-target">Copiar chave</button>
+                  </div>
+                </div>
+              )}
+              {colandoTexto && (
+                <div className="bg-stone-50 rounded-lg p-2.5 mt-2">
+                  <p className="text-xs text-stone-500 mb-2">Cola aqui o texto inteiro que você copiou da página (do nome do mercado até a chave de acesso).</p>
+                  <textarea value={textoColado} onChange={(e) => setTextoColado(e.target.value)} rows={4} placeholder="Cola aqui (Ctrl+V)..." className="w-full border border-stone-300 rounded-lg p-2 text-xs font-mono2" aria-label="Texto colado da consulta da nota" />
+                  <div className="flex gap-2 mt-2">
+                    <button onClick={() => { setColandoTexto(false); setTextoColado(""); }} className="flex-1 py-2 rounded-lg border border-stone-300 text-stone-600 text-xs font-semibold tap-target">Cancelar</button>
+                    <button onClick={processarTextoColado} disabled={!textoColado.trim()} className="flex-1 py-2 rounded-lg bg-emerald-700 text-white text-xs font-semibold tap-target disabled:opacity-40">Ler itens</button>
                   </div>
                 </div>
               )}

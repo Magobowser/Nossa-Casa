@@ -6318,12 +6318,17 @@ function ModalEditarItem({ item, catalogo, setCatalogo, sessoes, sessaoAtiva, pr
 ========================================================= */
 /* Nível 3 (OCR) — reserva pra quando não tem QR nem XML, só pro valor TOTAL, com carregamento
    sob demanda do Tesseract.js. Sempre pede confirmação/edição antes de usar o valor lido. */
+/* Seção sobre unificar conferência de NF: além de ler o total, guarda a FOTO de verdade —
+   antes essa função extraía o número e jogava a imagem fora, era o único dos 4 caminhos de
+   leitura de nota que não deixava nada salvo. Comprime pro mesmo padrão já usado em outros
+   lugares do app (resizeImage), pra não pesar o localStorage com foto em resolução cheia. */
 function ModalLerCupomOcr({ onValorLido, onFechar }) {
   useFecharComVoltar(true, onFechar);
   const [processando, setProcessando] = useState(false);
   const [erro, setErro] = useState(null);
   const [valorEncontrado, setValorEncontrado] = useState(null);
   const [valorTexto, setValorTexto] = useState("");
+  const [fotoBase64, setFotoBase64] = useState(null);
 
   async function aoEscolherFoto(e) {
     const file = e.target.files[0];
@@ -6332,9 +6337,10 @@ function ModalLerCupomOcr({ onValorLido, onFechar }) {
     setErro(null);
     setProcessando(true);
     try {
-      const Tesseract = await carregarTesseract();
+      const [comprimida, Tesseract] = await Promise.all([resizeImage(file, 1000, 0.75), carregarTesseract()]);
       const resultado = await Tesseract.recognize(file, "por");
       const total = extrairTotalDoTextoOcr(resultado.data.text);
+      setFotoBase64(comprimida);
       if (total != null) { setValorEncontrado(total); setValorTexto(formatarValorCampo(total)); }
       else { setErro("Não consegui identificar o total nessa foto. Tente uma foto mais nítida e enquadrada, ou digite o valor manualmente na Prévia."); }
     } catch (err) { setErro("Não consegui ler essa foto: " + err.message); }
@@ -6343,7 +6349,7 @@ function ModalLerCupomOcr({ onValorLido, onFechar }) {
 
   function confirmar() {
     const valor = parsePrecoInteligente(valorTexto);
-    if (valor != null) onValorLido(valor);
+    if (valor != null) onValorLido({ valor, arquivoBase64: fotoBase64, mimeType: "image/jpeg" });
   }
 
   return (
@@ -6693,7 +6699,11 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
               {sessao.nfe?.conferida && <span className="text-xs text-emerald-700 font-semibold">✓ Conferida</span>}
             </div>
             {sessao.nfe?.conferida ? (
-              <div className="text-xs text-stone-500">{sessao.nfe.nome_emit || "Emitente não identificado"} · {sessao.nfe.itens.filter((l) => !l.ignorado).length} itens · {brl(sessao.nfe.valor_total)}</div>
+              sessao.nfe.itens.length ? (
+                <div className="text-xs text-stone-500">{sessao.nfe.nome_emit || "Emitente não identificado"} · {sessao.nfe.itens.filter((l) => !l.ignorado).length} itens · {brl(sessao.nfe.valor_total)}</div>
+              ) : (
+                <div className="text-xs text-stone-500">📷 Lido por foto (só o total, sem itens) · {brl(sessao.nfe.valor_total)}</div>
+              )
             ) : (
               <>
                 {arquivoCompartilhado && (
@@ -6774,7 +6784,18 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
         <ScannerCodigoBarras formatos={["qr_code"]} titulo="Aponte pro QR Code da nota" onDetectado={aoDetectarQr} onFechar={() => setLendoQr(false)} />
       )}
       {lendoOcr && (
-        <ModalLerCupomOcr onValorLido={(valor) => { setNotaTexto(formatarValorCampo(valor)); setLendoOcr(false); }} onFechar={() => setLendoOcr(false)} />
+        <ModalLerCupomOcr
+          onValorLido={({ valor, arquivoBase64, mimeType }) => {
+            /* Mesmo formato de "nfe" que o PDF/texto colado já usam — reaproveita o mesmo trecho
+               do finalizar() que troca o arquivo bruto por um documento de verdade no Finanças.
+               Sem itens (foto só lê o total), por isso nasce direto como "conferida": não tem
+               item nenhum pra conferir contra a lista, então não faz sentido pedir revisão. */
+            setSessoes((ss) => ss.map((s) => (s.id === sessao.id
+              ? { ...s, nfe: { chave_acesso: null, cnpj_emit: null, nome_emit: null, data_emissao: null, valor_total: valor, itens: [], arquivo_base64: arquivoBase64, mime_type: mimeType, nome_arquivo: "cupom-foto.jpg", conferida: true } }
+              : s)));
+            setLendoOcr(false);
+          }}
+          onFechar={() => setLendoOcr(false)} />
       )}
       {confirmarSemNfe && (
         <ModalConfirmar titulo="Finalizar sem nota fiscal" severo={false} textoConfirmar="Finalizar mesmo assim"
@@ -7188,7 +7209,11 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
             {sessao.nfe?.conferida && <span className="text-xs text-emerald-700 font-semibold">✓ Conferida</span>}
           </div>
           {sessao.nfe?.conferida ? (
-            <div className="text-xs text-stone-500">{sessao.nfe.nome_emit || "Emitente não identificado"} · {sessao.nfe.itens.filter((l) => !l.ignorado).length} itens · {brl(sessao.nfe.valor_total)}</div>
+            sessao.nfe.itens.length ? (
+              <div className="text-xs text-stone-500">{sessao.nfe.nome_emit || "Emitente não identificado"} · {sessao.nfe.itens.filter((l) => !l.ignorado).length} itens · {brl(sessao.nfe.valor_total)}</div>
+            ) : (
+              <div className="text-xs text-stone-500">📷 Lido por foto (só o total, sem itens) · {brl(sessao.nfe.valor_total)}</div>
+            )
           ) : (
             <>
               <label className="flex items-center justify-center gap-2 border-2 border-dashed border-stone-300 rounded-xl py-3 text-sm text-stone-500 cursor-pointer tap-target">
@@ -7257,7 +7282,12 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
       )}
       {lendoOcr && (
         <ModalLerCupomOcr
-          onValorLido={(valor) => { setSessoes((ss) => ss.map((s) => (s.id === sessao.id ? { ...s, valor_nota_fiscal: valor } : s))); setLendoOcr(false); }}
+          onValorLido={({ valor, arquivoBase64, mimeType }) => {
+            setSessoes((ss) => ss.map((s) => (s.id === sessao.id
+              ? { ...s, valor_nota_fiscal: valor, nfe: { chave_acesso: null, cnpj_emit: null, nome_emit: null, data_emissao: null, valor_total: valor, itens: [], arquivo_base64: arquivoBase64, mime_type: mimeType, nome_arquivo: "cupom-foto.jpg", conferida: true } }
+              : s)));
+            setLendoOcr(false);
+          }}
           onFechar={() => setLendoOcr(false)} />
       )}
     </div>

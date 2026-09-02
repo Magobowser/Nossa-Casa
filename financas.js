@@ -73,8 +73,8 @@ function calcularSaldoConta(conta, lancamentos, ateChaveMes) {
     const d = new Date(l.data);
     return d >= inicio && d < limite;
   });
-  const soma = movimentacoes.reduce((acc, l) => acc + (l.tipo === "receita" ? l.valor : -l.valor), 0);
-  return conta.saldo_inicial + soma;
+  const soma = somarValores(...movimentacoes.map((l) => (l.tipo === "receita" ? l.valor : -l.valor)));
+  return somarValores(conta.saldo_inicial, soma);
 }
 
 function lancamentosDoMes(lancamentos, chave, contaId) {
@@ -92,9 +92,9 @@ function previstosDoMes(lancamentosFixos, lancamentos, chave, contaId) {
 }
 
 function totaisDoMes(itensDoMes) {
-  const entradas = itensDoMes.filter((l) => l.tipo === "receita" && !l.previsto).reduce((a, l) => a + l.valor, 0);
-  const saidas = itensDoMes.filter((l) => l.tipo === "despesa" && !l.previsto).reduce((a, l) => a + l.valor, 0);
-  return { entradas, saidas, saldoDoMes: entradas - saidas };
+  const entradas = somarValores(...itensDoMes.filter((l) => l.tipo === "receita" && !l.previsto).map((l) => l.valor));
+  const saidas = somarValores(...itensDoMes.filter((l) => l.tipo === "despesa" && !l.previsto).map((l) => l.valor));
+  return { entradas, saidas, saldoDoMes: somarValores(entradas, -saidas) };
 }
 
 /* ---------- Seção 15 do mapa: sub-aba Resumo — funções de cálculo dos 6 blocos ---------- */
@@ -879,12 +879,21 @@ function parseValorFinanceiro(txt) {
 function tamanhoAproximadoKB(strBase64) {
   return Math.round((strBase64 || "").length / 1024);
 }
-/* Compartilhada entre TelaDocumentos e ModalDetalheLancamento — abrir um documento anexado
-   numa aba nova, tratando os 3 tipos possíveis (pdf, imagem, resumo em texto da integração
-   com Mercado). */
+/* Compartilhada entre TelaDocumentos, ModalDetalheLancamento e o Mercado (via
+   verNotaFiscalDoFinancas) — abrir um documento anexado numa aba nova. Quando existe uma versão
+   reconstruída em HTML (Etapa 7), abre ela por padrão — mais fácil de ler que o PDF/foto crua —
+   com um link "Ver arquivo original" que abre o arquivo de verdade numa segunda aba (nunca
+   embutido dentro do HTML reconstruído, pra não duplicar o arquivo guardado em dobro). Documento
+   sem reconstrução (upload antigo, ou tipo que não gera HTML) cai no comportamento de sempre. */
 function abrirArquivoDocumento(doc) {
   const w = window.open();
   if (!w) return;
+  if (doc.html_reconstruido) {
+    w.document.write(doc.html_reconstruido);
+    const link = w.document.getElementById("linkOriginal");
+    if (link) link.addEventListener("click", (e) => { e.preventDefault(); window.open(doc.arquivo_base64, "_blank"); });
+    return;
+  }
   if (doc.mime_type === "application/pdf") { w.document.write(`<iframe src="${doc.arquivo_base64}" style="width:100%;height:100%;border:none;"></iframe>`); return; }
   if (doc.mime_type === "text/plain") {
     const texto = decodeURIComponent(escape(atob(doc.arquivo_base64.split(",")[1])));
@@ -1284,12 +1293,12 @@ function integrarCompraMercado(sessaoMercado, nomeMercado) {
         const documentos = documentosRaw ? JSON.parse(documentosRaw) : [];
         if (documentoIdFinal && documentos.some((d) => d.id === documentoIdFinal)) {
           // já tinha nota anexada nessa compra -- corrige o arquivo, não duplica
-          const atualizadosDocs = documentos.map((d) => (d.id === documentoIdFinal ? { ...d, nome_arquivo: sessaoMercado.nfe.nome_arquivo || d.nome_arquivo, arquivo_base64: sessaoMercado.nfe.arquivo_base64, mime_type: sessaoMercado.nfe.mime_type } : d));
+          const atualizadosDocs = documentos.map((d) => (d.id === documentoIdFinal ? { ...d, nome_arquivo: sessaoMercado.nfe.nome_arquivo || d.nome_arquivo, arquivo_base64: sessaoMercado.nfe.arquivo_base64, mime_type: sessaoMercado.nfe.mime_type, html_reconstruido: sessaoMercado.nfe.html_reconstruido } : d));
           persist("fn_documentos", atualizadosDocs);
         } else {
           // não tinha nota antes (ou tinha um resumo de versão antiga) -- cria de novo
           documentoIdFinal = uid();
-          const novoDocumento = { id: documentoIdFinal, tipo: "saida", categoria_documento: "nota_fiscal", nome_arquivo: sessaoMercado.nfe.nome_arquivo || ("NFe — " + (nomeMercado || "compra")), arquivo_base64: sessaoMercado.nfe.arquivo_base64, mime_type: sessaoMercado.nfe.mime_type, data_upload: new Date().toISOString(), lancamento_id: existente.id };
+          const novoDocumento = { id: documentoIdFinal, tipo: "saida", categoria_documento: "nota_fiscal", nome_arquivo: sessaoMercado.nfe.nome_arquivo || ("NFe — " + (nomeMercado || "compra")), arquivo_base64: sessaoMercado.nfe.arquivo_base64, mime_type: sessaoMercado.nfe.mime_type, html_reconstruido: sessaoMercado.nfe.html_reconstruido, data_upload: new Date().toISOString(), lancamento_id: existente.id };
           persist("fn_documentos", [...documentos, novoDocumento]);
         }
       }
@@ -1314,7 +1323,7 @@ function integrarCompraMercado(sessaoMercado, nomeMercado) {
       const documentos = documentosRaw ? JSON.parse(documentosRaw) : [];
       const novoDocumento = {
         id: documentoId, tipo: "saida", categoria_documento: "nota_fiscal", nome_arquivo: sessaoMercado.nfe.nome_arquivo || ("NFe — " + (nomeMercado || "compra")),
-        arquivo_base64: sessaoMercado.nfe.arquivo_base64, mime_type: sessaoMercado.nfe.mime_type,
+        arquivo_base64: sessaoMercado.nfe.arquivo_base64, mime_type: sessaoMercado.nfe.mime_type, html_reconstruido: sessaoMercado.nfe.html_reconstruido,
         data_upload: new Date().toISOString(), lancamento_id: novaDespesa.id,
       };
       persist("fn_documentos", [...documentos, novoDocumento]);
@@ -1441,7 +1450,7 @@ function ModalCategoriaFinanceira({ categoria, tipoInicial, gruposOrcamento, onS
 }
 
 /* ---------- ModalLancamento — criar/editar receita ou despesa ---------- */
-function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPadraoId, cartoes, limiar5Dias, valorInicial, documentoId, lancamentos, documentos, onSalvar, onAdiar5Dias, onRemover, onAnexarDocumento, onVincularDocumentoExistente, onEditarNoMercado, onFechar }) {
+function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPadraoId, cartoes, limiar5Dias, valorInicial, documentoId, lancamentos, documentos, onSalvar, onAdiar5Dias, onRemover, onAnexarDocumento, onAnexarNotaColada, onVincularDocumentoExistente, onEditarNoMercado, onFechar }) {
   useFecharComVoltar(true, onFechar);
   const ehNovo = !lancamento;
   const valorInputRef = useRef(null);
@@ -1474,6 +1483,44 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
      compra, e se sim, se quer ajustar pro valor do documento. Fica marcado (⚠️) até resolver. */
   const [marcadoDivergente, setMarcadoDivergente] = useState(lancamento?.valor_divergente || false);
   const [pendenteAnexo, setPendenteAnexo] = useState(null); // { file, tipoDocumento, valorDocumento, valorAtual, etapa }
+  /* Pedido do usuário: colar a nota fiscal direto no "+", puxando descrição/valor/data/categoria
+     sozinho — só falta escolher a conta. Reaproveita o mesmo parser e o mesmo "monta HTML" que
+     Mercado e Documentos já usam (nenhuma lógica nova de extração, só um jeito novo de chegar
+     nela). Confere de novo com o usuário na hora, não confirma sozinho: os campos vêm preenchidos
+     mas continuam editáveis antes de salvar. */
+  const [colandoNota, setColandoNota] = useState(false);
+  const [textoNotaColada, setTextoNotaColada] = useState("");
+  const [erroNota, setErroNota] = useState(null);
+  const [processandoNota, setProcessandoNota] = useState(false);
+  async function processarNotaColada() {
+    setErroNota(null);
+    setProcessandoNota(true);
+    try {
+      const nfeLida = parsearTextoConsultaNFCe(textoNotaColada);
+      const arquivoBase64 = "data:text/plain;charset=utf-8;base64," + btoa(unescape(encodeURIComponent(textoNotaColada)));
+      const htmlReconstruido = montarHtmlRecibo({
+        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, dataEmissao: nfeLida.data_emissao,
+        valorTotal: nfeLida.valor_total, itens: nfeLida.itens, chaveAcesso: nfeLida.chave_acesso,
+        avisoOrigem: "Reconstruído a partir do texto colado da consulta oficial — não é o documento oficial.",
+      });
+      setTipo("despesa");
+      setDescricao(nfeLida.nome_emit || "Nota fiscal");
+      setValorTexto(formatarValorCampo(nfeLida.valor_total));
+      if (nfeLida.data_emissao) setData(nfeLida.data_emissao);
+      const catSugerida = categoriaAutoDetectada(nfeLida.nome_emit || "", "despesa", categorias);
+      if (catSugerida) setCategoriaId(catSugerida);
+      if (onAnexarNotaColada) {
+        const novoId = await onAnexarNotaColada({ arquivoBase64, htmlReconstruido, nomeArquivo: "nfce-consulta.txt" }, "saida");
+        setDocumentoAnexadoId(novoId);
+      }
+      setColandoNota(false);
+      setTextoNotaColada("");
+    } catch (err) {
+      setErroNota(err.message);
+    } finally {
+      setProcessandoNota(false);
+    }
+  }
 
   /* Pedido do usuário: lançamento vindo de uma compra do Mercado não pode ter valor nem
      nota/comprovante mexidos direto aqui — só descrição, forma de pagamento, conta e categoria
@@ -1493,21 +1540,22 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
   const ultimoLancamento = ehNovo && lancamentos?.length ? [...lancamentos].filter((l) => !l.previsto && !(l.parcela_total > 1)).sort((a, b) => new Date(b.data) - new Date(a.data))[0] : null;
   const temAtalhos = sugestoes.length > 0 || !!ultimoLancamento;
 
-  /* Três telas dentro do mesmo modal, pedido do usuário depois de ver que o formulário inteiro
-     continuava visível embaixo dos atalhos (achava "burocrático" mesmo com atalho): "atalhos" (só
-     os cards, tela limpa) → "confirmacao" (descrição + valor, um botão, depois de tocar um atalho)
-     → "completo" (o formulário de sempre, só quando pede "mais detalhes" ou "lançar do zero"). */
-  const [tela, setTela] = useState(ehNovo && temAtalhos ? "atalhos" : "completo");
+  /* Etapa sobre simplificar o Finanças: os atalhos deixam de ser uma tela própria antes do
+     formulário — viram uma fileira compacta e dispensável no topo do formulário completo (pedido
+     do usuário: "toca em algo parecido, ou já lança do zero", sem hop de tela nenhum). Só o botão
+     de dispensar precisa de estado — sem isso, os atalhos aparecem sempre que existirem. */
+  const [atalhosDispensados, setAtalhosDispensados] = useState(false);
 
   /* Teclado abre direto no valor (pedido do usuário: "quanto gastei" costuma ser o primeiro
-     pensamento) — só em lançamento novo, sem atalho aplicado ainda. */
+     pensamento) — só em lançamento novo, uma vez ao montar. */
   useEffect(() => {
-    if (ehNovo && tela === "completo") setTimeout(() => valorInputRef.current?.focus(), 150);
-  }, [tela]);
+    if (ehNovo) setTimeout(() => valorInputRef.current?.focus(), 150);
+  }, []);
 
   /* Atalho: preenche tudo a partir de um lançamento passado, foca e seleciona o valor pra só
-     precisar ajustar o número (pedido do usuário: "ajusta só o valor e depois edita"). Transiciona
-     pra tela de confirmação mínima — não fica no formulário completo por baixo. */
+     precisar ajustar o número (pedido do usuário: "ajusta só o valor e depois edita"). Some a
+     fileira de atalhos depois de aplicado, pra não competir visualmente com o formulário já
+     preenchido. */
   function aplicarSugestao(s) {
     setTipo(s.tipo);
     setDescricao(s.descricao);
@@ -1515,7 +1563,7 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
     setValorTexto(formatarValorCampo(s.valor));
     if (s.forma_pagamento) setFormaPagamento(s.forma_pagamento);
     if (s.conta_id) setContaId(s.conta_id);
-    setTela("confirmacao");
+    setAtalhosDispensados(true);
     setTimeout(() => { valorInputRef.current?.focus(); valorInputRef.current?.select(); }, 50);
   }
 
@@ -1532,8 +1580,13 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
         const arrayBuffer = await file.arrayBuffer();
         texto = await extrairTextoDoPdf(arrayBuffer);
       } else {
+        /* Corrige a rotação (EXIF) antes do OCR — sem isso, foto tirada em retrato (a maioria)
+           faz o Tesseract tentar ler o texto deitado e sai lixo. Mesmo ajuste feito nos outros
+           4 pontos de OCR do app; aqui precisa calcular do zero porque essa função só lê o
+           valor, não guarda arquivo nenhum. */
+        const corrigida = await resizeImage(file, 1000, 0.75);
         const Tesseract = await carregarTesseract();
-        const resultado = await Tesseract.recognize(file, "por");
+        const resultado = await Tesseract.recognize(corrigida, "por");
         texto = resultado.data.text;
       }
       const cluster = texto.match(/Consulta:.*?(\d+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+Valor pago/);
@@ -1698,67 +1751,58 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
     );
   }
 
-  if (tela === "atalhos") {
-    return (
-      <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[70]" onClick={onFechar}>
-        <div className="bg-white rounded-t-2xl w-full max-w-md p-5 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-          <h3 className="text-lg font-bold mb-1">Novo lançamento</h3>
-          <p className="text-xs text-stone-500 mb-4">Toca em algo parecido, ou lança do zero.</p>
-          <div className="grid grid-cols-2 gap-2.5 mb-4">
-            {ultimoLancamento && (
-              <button onClick={() => aplicarSugestao(ultimoLancamento)} className="flex flex-col items-start bg-emerald-50 border-2 border-emerald-200 rounded-2xl p-3.5 text-left tap-target">
-                <span className="text-xs text-emerald-600 font-semibold mb-1">🔁 Repetir último</span>
-                <span className="text-sm text-stone-800 font-medium truncate w-full">{ultimoLancamento.descricao}</span>
-                <span className="text-base font-mono2 font-bold text-stone-800 mt-0.5">{brl(ultimoLancamento.valor)}</span>
-              </button>
-            )}
-            {sugestoes.filter((s) => s.id !== ultimoLancamento?.id).map((s) => {
-              const cat = by(categorias, s.categoria_id);
-              return (
-                <button key={s.id} onClick={() => aplicarSugestao(s)} className="flex flex-col items-start bg-stone-50 border-2 border-stone-200 rounded-2xl p-3.5 text-left tap-target">
-                  <span className="text-lg mb-1">{cat?.icone || "🏷️"}</span>
-                  <span className="text-sm text-stone-800 font-medium truncate w-full">{s.descricao}</span>
-                  <span className="text-base font-mono2 font-bold text-stone-800 mt-0.5">{brl(s.valor)}</span>
-                </button>
-              );
-            })}
-          </div>
-          <button onClick={() => setTela("completo")} className="w-full py-3 rounded-xl border border-stone-300 text-stone-600 font-semibold tap-target mb-2">✏️ Lançar do zero</button>
-          <button onClick={onFechar} className="w-full py-2 text-stone-400 text-sm tap-target">Cancelar</button>
-        </div>
-      </div>
-    );
-  }
-
-  if (tela === "confirmacao") {
-    const cat = by(categorias, categoriaId);
-    return (
-      <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[70]" onClick={onFechar}>
-        <div className="bg-white rounded-t-2xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
-          <button onClick={() => setTela("atalhos")} className="text-emerald-700 text-sm font-semibold mb-3 tap-target">← Voltar aos atalhos</button>
-          <div className="flex items-center gap-2 mb-4">
-            <span className="text-2xl">{cat?.icone || "🏷️"}</span>
-            <input value={descricao} onChange={(e) => setDescricao(e.target.value)} className="flex-1 font-bold text-lg border-b-2 border-stone-200 focus:border-emerald-600 outline-none pb-1" aria-label="Descrição" />
-          </div>
-          <label className="text-xs font-semibold text-stone-500 uppercase">Valor</label>
-          <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-3 mt-1 mb-4">
-            <span className="text-stone-400 font-mono2 text-xl">R$</span>
-            <input ref={valorInputRef} value={valorTexto} onChange={(e) => setValorTexto(sanitizarEntradaPreco(e.target.value))} className="font-mono2 font-bold text-2xl flex-1 outline-none" aria-label="Valor" />
-          </div>
-          <div className="flex gap-2 mb-2">
-            <button onClick={onFechar} className="py-2.5 px-4 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
-            <button onClick={tentarSalvar} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">✓ Salvar</button>
-          </div>
-          <button onClick={() => setTela("completo")} className="text-xs text-stone-400 underline block mx-auto tap-target">✏️ Mais detalhes (categoria, data, conta...)</button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[70]" onClick={onFechar}>
       <div className="bg-white rounded-t-2xl w-full max-w-md p-5 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <h3 className="text-lg font-bold mb-3">{lancamento ? "Editar lançamento" : "Novo lançamento"}</h3>
+
+        {ehNovo && temAtalhos && !atalhosDispensados && (
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-semibold text-stone-400 uppercase">Atalhos — toca em algo parecido</span>
+              <button onClick={() => setAtalhosDispensados(true)} aria-label="Esconder atalhos" className="text-stone-300 tap-target px-1">✕</button>
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+              {ultimoLancamento && (
+                <button onClick={() => aplicarSugestao(ultimoLancamento)} className="flex flex-col items-start bg-emerald-50 border-2 border-emerald-200 rounded-xl p-2.5 text-left tap-target shrink-0 w-32">
+                  <span className="text-[10px] text-emerald-600 font-semibold mb-0.5">🔁 Último</span>
+                  <span className="text-xs text-stone-800 font-medium truncate w-full">{ultimoLancamento.descricao}</span>
+                  <span className="text-sm font-mono2 font-bold text-stone-800">{brl(ultimoLancamento.valor)}</span>
+                </button>
+              )}
+              {sugestoes.filter((s) => s.id !== ultimoLancamento?.id).map((s) => {
+                const cat = by(categorias, s.categoria_id);
+                return (
+                  <button key={s.id} onClick={() => aplicarSugestao(s)} className="flex flex-col items-start bg-stone-50 border-2 border-stone-200 rounded-xl p-2.5 text-left tap-target shrink-0 w-32">
+                    <span className="text-sm mb-0.5">{cat?.icone || "🏷️"}</span>
+                    <span className="text-xs text-stone-800 font-medium truncate w-full">{s.descricao}</span>
+                    <span className="text-sm font-mono2 font-bold text-stone-800">{brl(s.valor)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {ehNovo && onAnexarNotaColada && (
+          <div className="mb-4">
+            {!colandoNota ? (
+              <button onClick={() => setColandoNota(true)} className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-emerald-300 rounded-xl py-2.5 text-sm text-emerald-700 font-semibold tap-target">
+                📎 Colar nota fiscal (preenche sozinho)
+              </button>
+            ) : (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+                <p className="text-xs text-stone-500 mb-2">Abre o link da consulta oficial da nota, seleciona tudo, copia, e cola aqui. Preenche descrição, valor, data e categoria sozinho — só falta escolher a conta.</p>
+                <textarea value={textoNotaColada} onChange={(e) => setTextoNotaColada(e.target.value)} rows={4} placeholder="Cola aqui (Ctrl+V)..." className="w-full border border-stone-300 rounded-lg p-2 text-xs font-mono2" aria-label="Texto colado da nota fiscal" disabled={processandoNota} />
+                {erroNota && <p className="text-xs text-red-600 mt-2">{erroNota}</p>}
+                <div className="flex gap-2 mt-2">
+                  <button onClick={() => { setColandoNota(false); setTextoNotaColada(""); setErroNota(null); }} disabled={processandoNota} className="flex-1 py-2 rounded-lg border border-stone-300 text-stone-600 text-xs font-semibold tap-target disabled:opacity-40">Cancelar</button>
+                  <button onClick={processarNotaColada} disabled={!textoNotaColada.trim() || processandoNota} className="flex-1 py-2 rounded-lg bg-emerald-700 text-white text-xs font-semibold tap-target disabled:opacity-40">{processandoNota ? "Lendo..." : "Ler nota"}</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="flex gap-2 mb-3">
           <Chip selected={tipo === "receita"} onClick={() => { setTipo("receita"); setCategoriaId(ultimaCategoriaPara("receita")); }}>💰 Receita</Chip>
@@ -1776,9 +1820,9 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
           ))}
         </select>
 
-        <label className="text-xs font-semibold text-stone-500 uppercase flex items-center gap-1.5">
-          Valor
-          {origemMercadoSessaoId && <span className="text-[10px] normal-case font-normal text-stone-400">🔒 vem do Mercado</span>}
+        <label className="text-xs font-semibold text-stone-500 uppercase flex items-center gap-1.5 justify-between">
+          <span className="flex items-center gap-1.5">Valor{origemMercadoSessaoId && <span className="text-[10px] normal-case font-normal text-stone-400">🔒 vem do Mercado</span>}</span>
+          {!origemMercadoSessaoId && <span className="text-[10px] text-stone-400 font-mono2 bg-stone-100 rounded px-1.5 py-0.5 normal-case font-normal">150→R$150,00</span>}
         </label>
         <div className={`flex items-center gap-2 border rounded-xl px-3 py-2.5 mt-1 mb-3 ${origemMercadoSessaoId ? "border-stone-200 bg-stone-50" : "border-stone-300"}`}>
           <span className="text-stone-400 font-mono2">R$</span>
@@ -1993,7 +2037,7 @@ function ModalFotografarRecibo({ categorias, contas, lancamentos, onSalvar, onFe
       const base64 = await resizeImage(file, 1000, 0.75);
       setArquivo({ base64, nomeArquivo: file.name || "recibo.jpg" });
       const Tesseract = await carregarTesseract();
-      const resultado = await Tesseract.recognize(file, "por");
+      const resultado = await Tesseract.recognize(base64, "por");
       const total = extrairTotalDoTextoOcr(resultado.data.text);
       if (total != null) setValorTexto(formatarValorCampo(total));
       else setErro("Não consegui achar o valor total sozinho — preenche à mão, o resto já veio pronto.");
@@ -2010,8 +2054,13 @@ function ModalFotografarRecibo({ categorias, contas, lancamentos, onSalvar, onFe
     if (!categoriaId) { alert("Escolhe uma categoria."); return; }
     if (!contaId) { alert("Escolhe (ou cadastra) uma conta primeiro."); return; }
     const documentoId = uid();
+    const htmlReconstruido = montarHtmlRecibo({
+      nomeEmit: descricao.trim() || "Recibo",
+      valorTotal: valor,
+      avisoOrigem: "Lido por foto (OCR) — só o total, sem itens. Confira contra a foto original se tiver dúvida.",
+    });
     onSalvar({
-      documento: { id: documentoId, tipo: "saida", categoria_documento: "recibo", nome_arquivo: arquivo.nomeArquivo, arquivo_base64: arquivo.base64, mime_type: "image/jpeg", data_upload: new Date().toISOString(), lancamento_id: null },
+      documento: { id: documentoId, tipo: "saida", categoria_documento: "recibo", nome_arquivo: arquivo.nomeArquivo, arquivo_base64: arquivo.base64, mime_type: "image/jpeg", html_reconstruido: htmlReconstruido, data_upload: new Date().toISOString(), lancamento_id: null },
       lancamento: {
         id: uid(), tipo: "despesa", descricao: descricao.trim() || "Compra", categoria_id: categoriaId, valor,
         data: new Date().toISOString(), fixa: false, recorrente: false, dia_recorrencia: null,
@@ -2042,7 +2091,10 @@ function ModalFotografarRecibo({ categorias, contas, lancamentos, onSalvar, onFe
           <>
             <img src={arquivo.base64} className="w-full max-h-36 object-cover rounded-xl mb-3" alt="Recibo fotografado" />
 
-            <label className="text-xs font-semibold text-stone-500 uppercase">Valor</label>
+            <label className="text-xs font-semibold text-stone-500 uppercase flex items-center justify-between">
+              Valor
+              <span className="text-[10px] text-stone-400 font-mono2 bg-stone-100 rounded px-1.5 py-0.5 normal-case font-normal">150→R$150,00</span>
+            </label>
             <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5 mt-1 mb-3">
               <span className="text-stone-400 font-mono2">R$</span>
               <input value={valorTexto} onChange={(e) => setValorTexto(sanitizarEntradaPreco(e.target.value))} className="font-mono2 font-bold text-lg flex-1 outline-none" aria-label="Valor" autoFocus />
@@ -2623,7 +2675,7 @@ function ModalAvisosExtrato({ lembretesVencidos, pendentesCategorizacao, mesPass
   );
 }
 
-function TelaExtrato({ categorias, contas, lancamentos, documentos, onSalvarLancamento, onRemoverLancamento, lancamentosFixos, setLancamentosFixos, lembretes5Dias, limiar5Dias, onAdiar5Dias, onConfirmarLembrete, onDescartarLembrete, reflexoesMensais, onSalvarReflexao, metas, cartoes, gruposOrcamento, rendaManual, historicoAportes, financiamentos, onResolverPendente, onAnexarDocumento, onVincularDocumentoExistente, onFotografarRecibo, onEditarNoMercado, onAbrirConfig }) {
+function TelaExtrato({ categorias, contas, lancamentos, documentos, onSalvarLancamento, onRemoverLancamento, lancamentosFixos, setLancamentosFixos, lembretes5Dias, limiar5Dias, onAdiar5Dias, onConfirmarLembrete, onDescartarLembrete, reflexoesMensais, onSalvarReflexao, metas, cartoes, gruposOrcamento, rendaManual, historicoAportes, financiamentos, onResolverPendente, onAnexarDocumento, onAnexarNotaColada, onVincularDocumentoExistente, onFotografarRecibo, onEditarNoMercado, onAbrirConfig }) {
   const [chaveMes, setChaveMes] = useState(chaveMesAtual());
   const [subVisao, setSubVisao] = useState("lista");
   const [modalLancamento, setModalLancamento] = useState(null); // null | {} (novo) | item (editar)
@@ -2873,6 +2925,7 @@ function TelaExtrato({ categorias, contas, lancamentos, documentos, onSalvarLanc
           onAdiar5Dias={(dados) => { onAdiar5Dias(dados); setModalLancamento(null); }}
           onRemover={removerLancamento}
           onAnexarDocumento={onAnexarDocumento}
+          onAnexarNotaColada={onAnexarNotaColada}
           onVincularDocumentoExistente={onVincularDocumentoExistente}
           onEditarNoMercado={onEditarNoMercado}
           onFechar={() => setModalLancamento(null)}
@@ -3804,6 +3857,28 @@ function ModalUploadDocumento({ tipoDocumento, lancamentos, categorias, contas, 
   const [valorEncontrado, setValorEncontrado] = useState(null);
   const [lancamentoEscolhidoId, setLancamentoEscolhidoId] = useState(null);
   const [criandoNovo, setCriandoNovo] = useState(false);
+  const [colandoTexto, setColandoTexto] = useState(false);
+  const [textoColado, setTextoColado] = useState("");
+  /* Etapa 6 do bloco de reconstrução de NF: mesmo caminho que já existe no Mercado (colar o
+     texto da consulta oficial), reaproveitando o parser de lá (parsearTextoConsultaNFCe) —
+     sem etapa de conferência contra catálogo aqui, porque isso é conceito só do Mercado (bater
+     item com produto cadastrado). Aqui é só: extrai os dados, monta o recibo em HTML, anexa. */
+  function processarTextoColado() {
+    try {
+      const nfeLida = parsearTextoConsultaNFCe(textoColado);
+      const arquivoBase64 = "data:text/plain;charset=utf-8;base64," + btoa(unescape(encodeURIComponent(textoColado)));
+      const htmlReconstruido = montarHtmlRecibo({
+        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, dataEmissao: nfeLida.data_emissao,
+        valorTotal: nfeLida.valor_total, itens: nfeLida.itens, chaveAcesso: nfeLida.chave_acesso,
+        avisoOrigem: "Reconstruído a partir do texto colado da consulta oficial — não é o documento oficial.",
+      });
+      setArquivo({ base64: arquivoBase64, mimeType: "text/plain", nomeArquivo: "nfce-consulta.txt", htmlPreconstruido: htmlReconstruido });
+      setValorEncontrado(nfeLida.valor_total);
+      setErro(null);
+      setColandoTexto(false);
+      setTextoColado("");
+    } catch (err) { setErro(err.message); }
+  }
   /* Pedido do usuário: vincular a um lançamento já existente passa pela mesma checagem de valor
      divergente da tela de edição — mesmo padrão, mesmas duas perguntas. */
   const [pendenteVinculo, setPendenteVinculo] = useState(null); // { lancamento, etapa }
@@ -3839,7 +3914,7 @@ function ModalUploadDocumento({ tipoDocumento, lancamentos, categorias, contas, 
         const base64Comprimido = await resizeImage(file, 1000, 0.75);
         setArquivo({ base64: base64Comprimido, mimeType: "image/jpeg", nomeArquivo: file.name });
         const Tesseract = await carregarTesseract();
-        const resultado = await Tesseract.recognize(file, "por");
+        const resultado = await Tesseract.recognize(base64Comprimido, "por");
         setValorEncontrado(extrairTotalDoTextoOcr(resultado.data.text));
       }
     } catch (err) {
@@ -3901,11 +3976,29 @@ function ModalUploadDocumento({ tipoDocumento, lancamentos, categorias, contas, 
         <h3 className="text-lg font-bold mb-1">{tipoDocumento === "entrada" ? "📥 Anexar documento de entrada" : "📤 Anexar documento de saída"}</h3>
         <p className="text-xs text-stone-500 mb-3">{tipoDocumento === "entrada" ? "Contracheque, comprovante de recebimento..." : "Boleto, nota fiscal, comprovante de pagamento..."}</p>
 
-        {!arquivo && !processando && (
-          <label className="flex items-center justify-center gap-2 border-2 border-dashed border-stone-300 rounded-xl py-6 text-sm text-stone-500 cursor-pointer tap-target">
-            📎 Escolher PDF ou foto
-            <input type="file" accept=".pdf,image/*" onChange={aoEscolherArquivo} className="hidden" />
-          </label>
+        {!arquivo && !processando && !colandoTexto && (
+          <>
+            <label className="flex items-center justify-center gap-2 border-2 border-dashed border-stone-300 rounded-xl py-6 text-sm text-stone-500 cursor-pointer tap-target">
+              📎 Escolher PDF ou foto
+              <input type="file" accept=".pdf,image/*" onChange={aoEscolherArquivo} className="hidden" />
+            </label>
+            {tipoDocumento === "saida" && (
+              <button onClick={() => setColandoTexto(true)} className="w-full text-center text-xs text-stone-500 underline mt-3 tap-target">
+                Ou colar o texto da consulta oficial da nota (NFC-e)
+              </button>
+            )}
+          </>
+        )}
+        {colandoTexto && (
+          <div>
+            <p className="text-xs text-stone-500 mb-2">Abre o link da consulta oficial (fazenda.rj.gov.br/nfce/consulta ou equivalente do seu estado), seleciona tudo, copia, e cola aqui.</p>
+            <textarea value={textoColado} onChange={(e) => setTextoColado(e.target.value)} rows={6}
+              className="w-full border border-stone-300 rounded-xl p-2.5 text-xs font-mono2" placeholder="Cole aqui o texto da página..." aria-label="Texto colado da consulta oficial" />
+            <div className="flex gap-2 mt-3">
+              <button onClick={() => { setColandoTexto(false); setTextoColado(""); }} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
+              <button onClick={processarTextoColado} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Processar</button>
+            </div>
+          </div>
         )}
         {processando && (
           <div className="text-center py-8">
@@ -3918,7 +4011,7 @@ function ModalUploadDocumento({ tipoDocumento, lancamentos, categorias, contas, 
         {arquivo && !processando && (
           <>
             <div className="bg-stone-50 rounded-lg p-2.5 mb-3 text-xs text-stone-600 flex items-center gap-2">
-              <span>{arquivo.mimeType === "application/pdf" ? "📄" : "📷"}</span>
+              <span>{arquivo.mimeType === "application/pdf" ? "📄" : arquivo.mimeType === "text/plain" ? "🧾" : "📷"}</span>
               <span className="truncate">{arquivo.nomeArquivo}</span>
             </div>
 
@@ -4177,24 +4270,38 @@ function TelaDocumentos({ documentos, setDocumentos, lancamentos, onSalvarLancam
   function aoSalvarUpload({ arquivo, lancamentoId, criarNovo, dadosLancamento, semVincular, ajustarValorPara, marcarDivergente }) {
     const documentoId = uid();
     let idFinal = lancamentoId;
+    let valorParaHtml = null, descricaoParaHtml = null;
     if (semVincular) {
       idFinal = null;
     } else if (criarNovo) {
       idFinal = dadosLancamento.id;
+      valorParaHtml = dadosLancamento.valor;
+      descricaoParaHtml = dadosLancamento.descricao;
       onSalvarLancamento({ ...dadosLancamento, documento_id: documentoId });
     } else {
       // marca o lançamento existente como tendo documento vinculado
       const lancamentoAlvo = lancamentos.find((l) => l.id === lancamentoId);
       if (lancamentoAlvo) {
+        valorParaHtml = ajustarValorPara != null ? ajustarValorPara : lancamentoAlvo.valor;
+        descricaoParaHtml = lancamentoAlvo.descricao;
         const atualizado = { ...lancamentoAlvo, documento_id: documentoId };
         if (ajustarValorPara != null) atualizado.valor = ajustarValorPara;
         if (marcarDivergente) atualizado.valor_divergente = true;
         onSalvarLancamento(atualizado);
       }
     }
+    /* Só monta a reconstrução aqui quando ainda não veio pronta — o texto colado (Etapa 6) já
+       traz a própria versão itemizada montada no momento do parse, não precisa refazer genérico. */
+    const htmlReconstruido = arquivo.htmlPreconstruido || (valorParaHtml != null ? montarHtmlRecibo({
+      nomeEmit: descricaoParaHtml || "Documento",
+      valorTotal: valorParaHtml,
+      avisoOrigem: arquivo.mimeType === "application/pdf"
+        ? "Reconstruído a partir do PDF anexado — não é o documento oficial."
+        : "Lido por foto (OCR) — só o total, sem itens.",
+    }) : null);
     setDocumentos((ds) => [...ds, {
-      id: documentoId, tipo: tipoParaNovoUpload, categoria_documento: "outro", nome_arquivo: arquivo.nomeArquivo, arquivo_base64: arquivo.base64,
-      mime_type: arquivo.mimeType, data_upload: new Date().toISOString(), lancamento_id: idFinal,
+      id: documentoId, tipo: tipoParaNovoUpload, categoria_documento: arquivo.mimeType === "text/plain" ? "nota_fiscal" : "outro", nome_arquivo: arquivo.nomeArquivo, arquivo_base64: arquivo.base64,
+      mime_type: arquivo.mimeType, html_reconstruido: htmlReconstruido, data_upload: new Date().toISOString(), lancamento_id: idFinal,
     }]);
     setModalUpload(false);
   }
@@ -4736,7 +4843,7 @@ function ModalAnexarFatura({ onAnexar, onFechar }) {
         arquivoBase64 = await resizeImage(file, 1000, 0.75);
         mimeType = "image/jpeg";
         const Tesseract = await carregarTesseract();
-        const r = await Tesseract.recognize(file, "por");
+        const r = await Tesseract.recognize(arquivoBase64, "por");
         textoExtraido = r.data.text;
       }
       const total = extrairTotalDoTextoOcr(textoExtraido);
@@ -4964,7 +5071,7 @@ function AppFinancas({ apiKey, setApiKey, onVoltarHub, onEditarNoMercado, arquiv
   useEffect(() => { if (!loading) { const ok = persist("fn_metas", metas); if (!ok) setErroSalvamento(true); } }, [metas, loading]);
   useEffect(() => { if (!loading) { const ok = persist("fn_documentos", documentos); if (!ok) setErroSalvamento(true); } }, [documentos, loading]);
   useEffect(() => { if (!loading) { const ok = persist("fn_cartoes", cartoes); if (!ok) setErroSalvamento(true); } }, [cartoes, loading]);
-  useEffect(() => { if (!loading && gruposOrcamento.length) { const ok = persist("fn_gruposOrcamento", gruposOrcamento); if (!ok) setErroSalvamento(true); } }, [gruposOrcamento, loading]);
+  useEffect(() => { if (!loading) { const ok = persist("fn_gruposOrcamento", gruposOrcamento); if (!ok) setErroSalvamento(true); } }, [gruposOrcamento, loading]);
   useEffect(() => { if (!loading) { if (rendaManual == null) localStorage.removeItem("fn_rendaManual"); else localStorage.setItem("fn_rendaManual", String(rendaManual)); } }, [rendaManual, loading]);
   useEffect(() => { if (!loading) { const ok = persist("fn_historicoAportes", historicoAportes); if (!ok) setErroSalvamento(true); } }, [historicoAportes, loading]);
   useEffect(() => { if (!loading) { const ok = persist("fn_financiamentos", financiamentos); if (!ok) setErroSalvamento(true); } }, [financiamentos, loading]);
@@ -5057,6 +5164,18 @@ function AppFinancas({ apiKey, setApiKey, onVoltarHub, onEditarNoMercado, arquiv
     setDocumentos((ds) => [...ds, { id: documentoId, tipo: tipoDocumento, nome_arquivo: file.name, arquivo_base64: arquivoBase64, mime_type: mimeType, data_upload: new Date().toISOString(), lancamento_id: null }]);
     return documentoId;
   }
+  /* Pedido do usuário: colar o texto da nota direto no "+", sem precisar passar por Documentos —
+     já chega com tudo pronto (parseado + HTML montado), então não repete a extração que
+     anexarDocumentoALancamento faz pra PDF/foto — só grava o documento. */
+  function anexarNotaColadaALancamento(dadosNfe, tipoDocumento) {
+    const documentoId = uid();
+    setDocumentos((ds) => [...ds, {
+      id: documentoId, tipo: tipoDocumento, categoria_documento: "nota_fiscal", nome_arquivo: dadosNfe.nomeArquivo,
+      arquivo_base64: dadosNfe.arquivoBase64, mime_type: "text/plain", html_reconstruido: dadosNfe.htmlReconstruido,
+      data_upload: new Date().toISOString(), lancamento_id: null,
+    }]);
+    return documentoId;
+  }
   /* Pedido do usuário: documentos que chegaram (compartilhamento, ou do repositório) e ainda não
      têm lançamento vinculado ficam disponíveis pra escolher na hora de editar um lançamento, em
      vez de subir o arquivo de novo. Chamada no momento de salvar o lançamento (não ao escolher),
@@ -5134,6 +5253,7 @@ function AppFinancas({ apiKey, setApiKey, onVoltarHub, onEditarNoMercado, arquiv
             reflexoesMensais={reflexoesMensais} onSalvarReflexao={salvarReflexao}
             metas={metas} cartoes={cartoes} gruposOrcamento={gruposOrcamento} rendaManual={rendaManual} historicoAportes={historicoAportes} financiamentos={financiamentos} onResolverPendente={resolverPendente}
             onAnexarDocumento={anexarDocumentoALancamento}
+            onAnexarNotaColada={anexarNotaColadaALancamento}
             onVincularDocumentoExistente={vincularDocumentoAoLancamento}
             onFotografarRecibo={fotografarRecibo}
             onEditarNoMercado={onEditarNoMercado}

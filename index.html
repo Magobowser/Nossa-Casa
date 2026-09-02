@@ -93,7 +93,7 @@
 </script>
 
 <script>
-  window.VERSAO_APP = "2026.09.01-1"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
+  window.VERSAO_APP = "2026.09.03-7"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
 </script>
 
 <script>
@@ -244,9 +244,65 @@ function resizeImage(file, maxWidth = 480, quality = 0.72) {
   });
 }
 
-/* =========================================================
-   REGRAS DE NEGÓCIO
-========================================================= */
+/* Compartilhada entre Mercado e Finanças — monta uma versão limpa em HTML a partir de qualquer
+   fonte já lida (PDF, texto colado, foto+OCR). Cada campo é opcional, o HTML só mostra o que
+   existe — funciona tanto pra nota com itens quanto pra comprovante só com total. Documento
+   autocontido (CSS embutido, sem CDN), pensado pra abrir numa aba nova mesmo offline. Isso é só
+   a "embalagem" visual — nunca é a fonte de verdade dos dados (isso continua sendo o arquivo
+   original, guardado à parte); ver abrirArquivoDocumento (financas.js) pra como os dois convivem. */
+function escaparHtml(s) {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function montarHtmlRecibo({ nomeEmit, cnpj, dataEmissao, valorTotal, itens, formaPagamento, chaveAcesso, avisoOrigem }) {
+  const estilo = `
+    body { font-family: 'Courier New', monospace; background: #f2ece0; margin: 0; padding: 28px 14px; color: #292524; }
+    .ticket { max-width: 420px; margin: 0 auto; background: #fffdf8; border: 1px dashed #b8ab8f; border-radius: 6px; padding: 22px 20px; }
+    .emit { text-align: center; font-weight: bold; font-size: 15px; margin-bottom: 2px; }
+    .sub { text-align: center; font-size: 11px; color: #78716c; }
+    .linha { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 4px 0; }
+    .linha .nome { flex: 1; }
+    hr { border: none; border-top: 1px dashed #b8ab8f; margin: 12px 0; }
+    .total { display: flex; justify-content: space-between; font-weight: bold; font-size: 17px; margin-top: 2px; }
+    .rodape { text-align: center; font-size: 10px; color: #a8a29e; margin-top: 14px; word-break: break-all; }
+    .aviso { text-align: center; font-size: 10.5px; color: #92400e; background: #fef3c7; border-radius: 8px; padding: 8px 10px; margin-top: 14px; }
+    .original { display: block; text-align: center; font-size: 12px; margin-top: 14px; color: #047857; text-decoration: underline; }
+  `;
+  const linhasItens = (itens || []).map((it) => `
+    <div class="linha"><span class="nome">${escaparHtml(it.descricao)}${it.quantidade && it.quantidade !== 1 ? ` (${it.quantidade}x)` : ""}</span><span>${brl(it.valor_total)}</span></div>
+  `).join("");
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escaparHtml(nomeEmit || "Recibo")}</title><style>${estilo}</style></head>
+<body><div class="ticket">
+  <div class="emit">${escaparHtml(nomeEmit || "Estabelecimento não identificado")}</div>
+  ${cnpj ? `<div class="sub">${escaparHtml(cnpj)}</div>` : ""}
+  ${dataEmissao ? `<div class="sub">${escaparHtml(dataEmissao)}</div>` : ""}
+  <hr>
+  ${itens && itens.length ? linhasItens + "<hr>" : ""}
+  <div class="total"><span>TOTAL</span><span>${brl(valorTotal)}</span></div>
+  ${formaPagamento ? `<div class="sub" style="margin-top:8px;">${escaparHtml(formaPagamento)}</div>` : ""}
+  ${chaveAcesso ? `<div class="rodape">Chave: ${escaparHtml(chaveAcesso)}</div>` : ""}
+  <div class="aviso">${escaparHtml(avisoOrigem || "Reconstruído a partir do documento original — não é o documento oficial.")}</div>
+  <a href="#" id="linkOriginal" class="original">Ver arquivo original</a>
+</div></body></html>`;
+}
+
+/* Etapa sobre precisão numérica em dinheiro — decisão de escopo, registrada aqui pra quem for
+   mexer depois: migrar TUDO pra armazenar em centavos inteiros (em vez de reais como número)
+   tocaria praticamente toda soma/multiplicação dos dois arquivos, e exigiria migrar todo o
+   histórico já salvo no localStorage de todo mundo que já usa o app — risco de regressão em
+   massa, silenciosa, sem jeito fácil de detectar se alguma conta ficou sutilmente errada.
+   A correção aqui ataca a MESMA causa raiz (arredondamento de ponto flutuante tipo
+   19.99 * 5 = 99.94999999999999, não 99.95) sem migrar nada: converte pra centavos inteiros,
+   faz a conta, converte de volta arredondado — o formato salvo continua sendo "reais como
+   número" de sempre, só que agora sempre exato até o centavo, nunca com resíduo. Aplicado nos
+   pontos de maior valor (subtotal de item, total de sessão no Mercado; saldo de conta no
+   Finanças) — não é uma varredura de toda multiplicação/soma dos dois arquivos, que seria um
+   projeto à parte, arriscado demais pra fazer de uma vez sem testar cada tela na prática. */
+function paraCentavos(valorReais) { return Math.round((valorReais || 0) * 100); }
+function deCentavos(centavos) { return centavos / 100; }
+function multiplicarValor(valorReais, quantidade) { return deCentavos(Math.round(paraCentavos(valorReais) * quantidade)); }
+function somarValores(...valores) { return deCentavos(valores.reduce((acc, v) => acc + paraCentavos(v), 0)); }
+function arredondarCentavos(valorReais) { return valorReais == null ? valorReais : deCentavos(paraCentavos(valorReais)); }
+
 /* Seção 24: quando o item teve promoção, o histórico/indicador/tendência/comparação usam o preço
    NORMAL (sem desconto), não o valor efetivamente pago — evita que uma promoção pontual vire
    "o novo normal" e faça o próximo preço cheio parecer caro sem ter ficado. */
@@ -970,7 +1026,7 @@ function App() {
 
   if (abaPrincipal === "mercado") {
     if (typeof AppMercado === "undefined") return <TelaFalhaDeCarregamento nomeArquivo="mercado.js" onVoltarHub={() => setAbaPrincipal("hub")} />;
-    return <LimiteDeErro>{avisoCompartilhado}<AppMercado apiKey={apiKey} setApiKey={setApiKey} onVoltarHub={() => setAbaPrincipal("hub")} arquivoCompartilhado={arquivoCompartilhado} onUsarArquivoCompartilhado={descartarArquivoCompartilhado} sessaoParaEditarExterno={sessaoMercadoParaEditar} onAbriuSessaoExterna={() => setSessaoMercadoParaEditar(null)} /></LimiteDeErro>;
+    return <LimiteDeErro>{avisoCompartilhado}<AppMercado apiKey={apiKey} setApiKey={setApiKey} onVoltarHub={() => setAbaPrincipal("hub")} onAbrirConfigGeral={() => setAbaPrincipal("config")} arquivoCompartilhado={arquivoCompartilhado} onUsarArquivoCompartilhado={descartarArquivoCompartilhado} sessaoParaEditarExterno={sessaoMercadoParaEditar} onAbriuSessaoExterna={() => setSessaoMercadoParaEditar(null)} /></LimiteDeErro>;
   }
 
   if (abaPrincipal === "financas") {
@@ -981,8 +1037,8 @@ function App() {
   return <>{avisoCompartilhado}<Hub onEntrar={setAbaPrincipal} /></>;
 }
 </script>
-<script type="text/babel" data-presets="react,env" src="./mercado.js?v=2026.09.01-1"></script>
-<script type="text/babel" data-presets="react,env" src="./financas.js?v=2026.09.01-1"></script>
+<script type="text/babel" data-presets="react,env" src="./mercado.js?v=2026.09.03-7"></script>
+<script type="text/babel" data-presets="react,env" src="./financas.js?v=2026.09.03-7"></script>
 <script type="text/babel" data-presets="react,env">
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>

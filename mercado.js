@@ -86,6 +86,45 @@ function calcIndicador(precoPago, media) {
   if (precoPago <= media * 1.05) return "normal";
   return "caro";
 }
+/* Etapa sobre "desconto de clube" — média de referência só com histórico REAL de compra
+   (nunca estimativa de IA, nunca comparação entre tamanhos diferentes) — é a única fonte
+   confiável o bastante pra justificar reescrever um preço já registrado no histórico. Repare
+   que é mais restrita que mediaRefPara (usada só pra mostrar o indicador 🔴/🟢 durante a compra,
+   onde uma estimativa a menos é aceitável porque é só informativo, não muda dado nenhum). */
+function mediaHistoricaReal(sessoes, varianteId, unidade, mercadoId) {
+  const rec = calcMediaRecente(sessoes, varianteId, unidade, mercadoId);
+  const ger = calcHistorico(sessoes, varianteId, unidade)?.media;
+  return rec ?? ger ?? null;
+}
+/* Decisão do usuário: os valores no app devem refletir o preço REAL pago, registrado de verdade
+   — o objetivo aqui não é "proteger" o histórico de poluição, é corrigi-lo pro valor certo.
+   Tenta explicar a diferença entre o total calculado (preço de tabela, o que fica impresso item
+   a item na nota) e o "Descontos R$" que a própria nota declara: soma o excesso (preço pago menos
+   a própria média histórica) só dos itens que o indicador já marcaria como 🔴 caro. Bate exato
+   com o desconto declarado → aplica, cada item volta pro seu preço real (a própria média — não
+   uma fração arbitrária do desconto total, é o valor mais correto disponível pra "quanto eu
+   realmente paguei"). Não bate → não mexe em nada, a suposição pode estar errada (pode ser reajuste
+   de preço de verdade, não desconto) — cai no aviso de diferença comum, sem sugestão automática.
+   Item sem histórico real não entra na conta (não tem uma "própria média" pra comparar). */
+function tentarExplicarDescontoClube(itens, valorDesconto, sessoes, catalogo, mercadoId) {
+  if (valorDesconto == null || valorDesconto <= 0) return null;
+  const candidatos = [];
+  let somaExcesso = 0;
+  for (const item of itens) {
+    if (item.preco_pago == null || !item.comprado) continue;
+    const variante = by(catalogo.variantes, item.produto_variante_id);
+    if (!variante) continue;
+    const media = mediaHistoricaReal(sessoes, item.produto_variante_id, item.unidade, mercadoId);
+    if (media == null) continue;
+    if (calcIndicador(item.preco_pago, media) !== "caro") continue;
+    const excesso = multiplicarValor(item.preco_pago - media, item.quantidade || 1);
+    candidatos.push({ itemId: item.id, precoAntigo: item.preco_pago, precoNovo: media, quantidade: item.quantidade || 1 });
+    somaExcesso += excesso;
+  }
+  if (!candidatos.length) return null;
+  if (Math.abs(somaExcesso - valorDesconto) > 0.05) return null;
+  return candidatos;
+}
 function calcItensFrequentes(sessoes, catalogo, n = 8) {
   const cont = {};
   for (const s of sessoes) {
@@ -209,6 +248,30 @@ function melhorMatchNfe(descricaoNfe, itensCandidatos, catalogo) {
   }
   return melhorPontos >= 2 ? melhor : null;
 }
+/* Etapa sobre conferência de nota: agrupa linhas da nota com descrição IDÊNTICA antes de tentar
+   casar com a lista. Sem isso, quando o mesmo produto vem em várias linhas separadas (pesado em
+   pacotes diferentes no açougue, ou registrado com código interno diferente por variação de lote)
+   a tela casava só a PRIMEIRA linha com o item da lista e tratava o resto como "não encontrado" —
+   fazia parecer um rombo de preço gigante que não existia (achado testando com nota real: Acém
+   Bovino pesado em 3 pacotes, "divergência" de R$58 que na verdade era R$3, a soma dos 3 batia
+   com o esperado). Só agrupa por descrição EXATAMENTE igual, nunca por semelhança — junta coisa
+   errada é pior que deixar "não encontrado" separado, que pelo menos é honesto sobre a incerteza.
+   Preserva quantas linhas originais viraram uma, pra mostrar isso na tela (nunca silencioso). */
+function agruparLinhasNfePorDescricao(itens) {
+  const grupos = new Map();
+  for (const linha of itens) {
+    const chave = linha.descricao.trim();
+    if (!grupos.has(chave)) {
+      grupos.set(chave, { ...linha, linhasOriginais: 1 });
+    } else {
+      const atual = grupos.get(chave);
+      atual.quantidade = (atual.quantidade || 0) + (linha.quantidade || 0);
+      atual.valor_total = (atual.valor_total || 0) + (linha.valor_total || 0);
+      atual.linhasOriginais += 1;
+    }
+  }
+  return [...grupos.values()];
+}
 /* Evita anexar a mesma nota duas vezes por engano — procura a chave de acesso em todas as sessões */
 /* Pedido do usuário: ver a nota fiscal com 1 toque desde o histórico do Mercado, sem duplicar
    arquivo — lê direto de fn_documentos (mesma fonte que o Finanças usa), igual o padrão de
@@ -219,7 +282,7 @@ function verNotaFiscalDoFinancas(documentoId) {
     const documentos = documentosRaw ? JSON.parse(documentosRaw) : [];
     const documento = documentos.find((d) => d.id === documentoId);
     if (!documento) { alert("Não achei essa nota fiscal — pode ter sido removida em Documentos, no Finanças."); return; }
-    window.open(documento.arquivo_base64, "_blank");
+    abrirArquivoDocumento(documento); // definida em financas.js — por essa altura, já carregado
   } catch (e) { alert("Não consegui abrir a nota fiscal."); }
 }
 function sessaoComMesmaNfe(sessoes, chaveAcesso, ignorarSessaoId) {
@@ -259,8 +322,16 @@ function parsearDanfePdf(texto) {
 
   const nomeMatch = texto.match(/([A-ZÀ-Ú][A-ZÀ-Ú\s]{5,60}?)\s+CNPJ:/);
   const cnpjMatch = texto.match(/CNPJ:\s*([\d.\/-]+)/);
+  /* Etapa sobre desconto de clube: mesmo padrão de rótulo já confirmado no texto colado da
+     consulta oficial ("Descontos R$:X,XX") — aqui é best-effort, ainda não testado contra um
+     PDF real com desconto, mas falha em silêncio (fica null) se o formato for diferente, sem
+     quebrar a leitura do resto da nota. */
+  const descontoMatch = texto.match(/Descontos?\s*R\$:?\s*([\d,]+)/i);
+  /* Testado contra as 2 notas reais já usadas nessa conversa — bateu certo nas duas. */
+  const dataMatch = texto.match(/Emiss[ãa]o:\s*(\d{2})\/(\d{2})\/(\d{4})/);
+  const dataEmissao = dataMatch ? `${dataMatch[3]}-${dataMatch[2]}-${dataMatch[1]}` : null;
 
-  return { chave_acesso: chaveAcesso, cnpj_emit: cnpjMatch ? cnpjMatch[1] : null, nome_emit: nomeMatch ? nomeMatch[1].trim() : null, data_emissao: null, valor_total: valorTotal, itens };
+  return { chave_acesso: chaveAcesso, cnpj_emit: cnpjMatch ? cnpjMatch[1] : null, nome_emit: nomeMatch ? nomeMatch[1].trim() : null, data_emissao: dataEmissao, valor_total: valorTotal, valor_desconto: descontoMatch ? numDe(descontoMatch[1]) : null, itens };
 }
 function extrairChaveDoQrNfce(conteudoQr) {
   const porParametro = conteudoQr.match(/[?&]p=(\d{44})/);
@@ -294,6 +365,49 @@ async function extrairTextoDePdf(arrayBuffer) {
   }
   return textoCompleto;
 }
+/* Código IBGE da UF = 2 primeiros dígitos da chave de acesso — tabela fixa e estável (a última
+   mudança foi 1988, criação do TO), pode confiar de cabeça. */
+const UF_POR_CODIGO_IBGE = {
+  "11": "RO", "12": "AC", "13": "AM", "14": "RR", "15": "PA", "16": "AP", "17": "TO",
+  "21": "MA", "22": "PI", "23": "CE", "24": "RN", "25": "PB", "26": "PE", "27": "AL", "28": "SE", "29": "BA",
+  "31": "MG", "32": "ES", "33": "RJ", "35": "SP",
+  "41": "PR", "42": "SC", "43": "RS",
+  "50": "MS", "51": "MT", "52": "GO", "53": "DF",
+};
+/* URLs de consulta de NFC-e por estado (produção) — pesquisado, NÃO testado individualmente como
+   o link do RJ (esse sim já foi usado de verdade nesta conversa). Fonte principal é uma lista de
+   2019 que pode estar desatualizada em alguns estados (Sefaz muda essas URLs periodicamente, sem
+   aviso). Mesmo assim, é estritamente melhor que o comportamento antigo (mandar TODO mundo pro
+   RJ, sempre errado pra quem não é do RJ) — e a chave continua visível/copiável na tela pra
+   colar manualmente numa busca, caso o link de algum estado tenha mudado. Santa Catarina (SC)
+   não tem NFC-e (confirmado na pesquisa) — cai no fallback de busca. */
+const URL_CONSULTA_NFCE_POR_UF = {
+  AC: "https://www.sefaznet.ac.gov.br/nfce/consulta",
+  AL: "https://www.sefaz.al.gov.br/nfce/consulta",
+  AM: "https://www.sefaz.am.gov.br/nfce/consulta",
+  BA: "https://www.sefaz.ba.gov.br/nfce/consulta",
+  CE: "https://www.sefaz.ce.gov.br/nfce/consulta",
+  DF: "https://www.fazenda.df.gov.br/nfce/consulta",
+  ES: "https://app.sefaz.es.gov.br/consultaNFCe/",
+  GO: "https://www.sefaz.go.gov.br/nfce/consulta",
+  MA: "https://www.sefaz.ma.gov.br/nfce/consulta",
+  MG: "https://portalsped.fazenda.mg.gov.br/portalnfce/sistema/consultanfce.xhtml",
+  MS: "https://www.dfe.ms.gov.br/nfce/consulta",
+  MT: "https://www.sefaz.mt.gov.br/nfce/consultanfce",
+  PA: "https://www.sefa.pa.gov.br/nfce/consulta",
+  PB: "https://www.sefaz.pb.gov.br/servirtual/documentos-fiscais/nfc-e/consultar-nfc-e",
+  PE: "https://nfce.sefaz.pe.gov.br/nfce/consulta",
+  PI: "https://www.sefaz.pi.gov.br/nfce/consulta",
+  PR: "https://www.fazenda.pr.gov.br/nfce/consulta",
+  RJ: "https://www.fazenda.rj.gov.br/nfce/consulta",
+  RN: "https://www.set.rn.gov.br/nfce/consulta",
+  RO: "https://www.sefin.ro.gov.br/nfce/consulta",
+  RR: "https://www.sefaz.rr.gov.br/nfce/consulta",
+  RS: "https://www.sefaz.rs.gov.br/nfce/consulta",
+  SE: "https://www.nfce.se.gov.br/nfce/consulta",
+  SP: "https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaPublica.aspx",
+  TO: "https://www.sefaz.to.gov.br/nfce/consulta",
+};
 /* Seção 34 do mapa: em vez de abrir o portal cru da Sefaz (varia por estado, pode ter captcha,
    navegação confusa), abre o Meu Danfe já com a chave preenchida — usuário só clica em baixar.
    Formato do link é uma aposta razoável (não confirmado com a documentação oficial deles, que
@@ -307,11 +421,17 @@ function montarUrlMeuDanfe(chave) {
    dá pra contornar), a PESSOA abre o link no navegador dela mesma (não é um robô, não cai no
    bloqueio), copia o texto da página inteira, e cola de volta aqui — o app remonta os dados
    sozinho. Link oficial do governo (não terceiro) sempre que a chave veio de um QR de verdade
-   (guarda a URL original do QR, que já é o link certo); pra chave digitada na mão, manda pra
-   página geral de consulta por chave. */
+   (guarda a URL original do QR, que já é o link certo). Pra chave digitada na mão, sem URL de
+   QR pra usar, detecta o estado pelos 2 primeiros dígitos da própria chave (código IBGE, seção
+   sobre corrigir o estado errado) e manda pro portal certo — antes mandava sempre pro RJ,
+   errado pra qualquer outro estado. */
 function montarUrlConsultaOficial(chaveDoQr) {
   if (chaveDoQr?.url) return chaveDoQr.url; // URL original do QR, já é o link certo e completo
-  return "https://www.fazenda.rj.gov.br/nfce/consulta"; // chave digitada na mão — sem URL de QR, manda pra busca geral
+  const uf = UF_POR_CODIGO_IBGE[chaveDoQr?.chave?.slice(0, 2)];
+  const urlDoEstado = uf && URL_CONSULTA_NFCE_POR_UF[uf];
+  if (urlDoEstado) return urlDoEstado;
+  // Estado não mapeado (ou SC, que não tem NFC-e) — cai numa busca, melhor que mandar pro estado errado
+  return `https://www.google.com/search?q=consulta+NFCe+${uf || "chave+de+acesso"}`;
 }
 /* Testado contra o texto real copiado da página de consulta da Sefaz-RJ (22 itens, bateu 100%
    com a soma "Valor total R$"). Formato por item, sempre 3 linhas:
@@ -338,8 +458,15 @@ function parsearTextoConsultaNFCe(texto) {
 
   const nomeMatch = texto.match(/DOCUMENTO AUXILIAR.*?\n+(.+?)\s*\nCNPJ:/s);
   const cnpjMatch = texto.match(/CNPJ:\s*([\d.\/-]+)/);
+  /* Etapa sobre desconto de clube: rótulo confirmado contra nota real (Tere Hortifruti,
+     "Descontos R$:12,26") — usado depois pra tentar explicar diferença sem mexer em preço às
+     cegas, ver tentarExplicarDescontoClube. */
+  const descontoMatch = texto.match(/Descontos?\s*R\$:?\s*([\d,]+)/i);
+  /* Testado contra as 2 notas reais já usadas nessa conversa — bateu certo nas duas. */
+  const dataMatch = texto.match(/Emiss[ãa]o:\s*(\d{2})\/(\d{2})\/(\d{4})/);
+  const dataEmissao = dataMatch ? `${dataMatch[3]}-${dataMatch[2]}-${dataMatch[1]}` : null;
 
-  return { chave_acesso: chaveAcesso, cnpj_emit: cnpjMatch ? cnpjMatch[1] : null, nome_emit: nomeMatch ? nomeMatch[1].trim() : null, data_emissao: null, valor_total: valorTotal, itens };
+  return { chave_acesso: chaveAcesso, cnpj_emit: cnpjMatch ? cnpjMatch[1] : null, nome_emit: nomeMatch ? nomeMatch[1].trim() : null, data_emissao: dataEmissao, valor_total: valorTotal, valor_desconto: descontoMatch ? numDe(descontoMatch[1]) : null, itens };
 }
 /* Reserva pro scanner (seção 30): Safari/iOS não tem BarcodeDetector nativo — nenhum navegador
    no iPhone tem, é regra da Apple todo navegador ali usar o motor do Safari por baixo. A ZXing
@@ -546,7 +673,7 @@ function exportarExcel(sessoes, catalogo) {
   const porMes = {}, porMercado = {};
   for (const s of sessoes) {
     if (s.status !== "fechada") continue;
-    const valor = s.valor_nota_fiscal ?? s.itens.reduce((a, it) => a + (it.subtotal || 0), 0);
+    const valor = s.valor_nota_fiscal ?? somarValores(...s.itens.map((it) => it.subtotal || 0));
     porMes[mesAno(s.data_hora)] = (porMes[mesAno(s.data_hora)] || 0) + valor;
     const nomeM = by(catalogo.mercados, s.mercado_id)?.nome || s.mercado_id;
     porMercado[nomeM] = (porMercado[nomeM] || 0) + valor;
@@ -4766,7 +4893,12 @@ function GraficoComparacaoTamanhos({ series, unidadeBase, largura = 300, altura 
   );
 }
 
-function SeletorBusca({ label, opcoes, valorId, onSelecionar, permitirNenhum, nenhumLabel }) {
+/* Etapa sobre criar item/marca no fluxo de compra: SeletorBusca ganha "+ Criar" quando a busca
+   não acha nada — resolve de uma vez o bug de "não dá pra criar marca nova" nos dois formulários
+   que usam esse componente (FormVariante e o formulário rápido dentro da lista), sem duplicar
+   lógica. Quem CRIA de verdade é sempre quem chama o componente (via onCriarNovo) — SeletorBusca
+   só sabe mostrar o botão e fechar depois, não sabe editar catálogo. */
+function SeletorBusca({ label, opcoes, valorId, onSelecionar, permitirNenhum, nenhumLabel, onCriarNovo, labelCriar }) {
   const [aberto, setAberto] = useState(false);
   const [busca, setBusca] = useState("");
   const selecionado = opcoes.find((o) => o.id === valorId);
@@ -4774,6 +4906,12 @@ function SeletorBusca({ label, opcoes, valorId, onSelecionar, permitirNenhum, ne
 
   function escolher(id) {
     onSelecionar(id);
+    setAberto(false);
+    setBusca("");
+  }
+  function criar() {
+    if (!onCriarNovo || !busca.trim()) return;
+    onCriarNovo(busca.trim());
     setAberto(false);
     setBusca("");
   }
@@ -4805,7 +4943,16 @@ function SeletorBusca({ label, opcoes, valorId, onSelecionar, permitirNenhum, ne
                 {o.nome}
               </button>
             ))}
-            {!filtradas.length && <div className="p-3 text-xs text-stone-400 text-center">Nada encontrado</div>}
+            {!filtradas.length && (
+              <div className="p-3 text-center">
+                <div className="text-xs text-stone-400 mb-2">Nada encontrado</div>
+                {onCriarNovo && busca.trim() && (
+                  <button onClick={criar} className="text-xs text-emerald-700 font-semibold underline tap-target">
+                    + Criar {labelCriar || ""} "{busca.trim()}"
+                  </button>
+                )}
+              </div>
+            )}
           </div>
           <button onClick={() => { setAberto(false); setBusca(""); }} className="w-full text-center p-2 text-xs text-stone-400 border-t border-stone-100 tap-target">
             Fechar
@@ -4965,7 +5112,13 @@ function TelaMercados({ catalogo, setCatalogo, sessoes }) {
                 <div className="text-xs text-stone-500 truncate">{[m.razao_social, m.cnpj].filter(Boolean).join(" · ") || m.endereco}</div>
               </div>
             </div>
-            <div className="flex gap-3 shrink-0">
+            <div className="flex gap-3 shrink-0 items-center">
+              {!m.ativo && (
+                <label className="flex items-center gap-1.5 text-xs text-stone-500 tap-target">
+                  <input type="checkbox" checked={false} onChange={() => setCatalogo((c) => ({ ...c, mercados: c.mercados.map((x) => (x.id === m.id ? { ...x, ativo: true } : x)) }))} className="w-5 h-5" />
+                  Reativar
+                </label>
+              )}
               <button onClick={() => setForm({ ordem_categorias: [], ...m })} aria-label={`Editar ${m.nome}`} className="text-stone-400 tap-target">✏️</button>
               {m.ativo && <button onClick={() => remover(m)} aria-label={`Remover ${m.nome}`} className="text-red-400 tap-target">🗑️</button>}
             </div>
@@ -4996,6 +5149,13 @@ function TelaMercados({ catalogo, setCatalogo, sessoes }) {
                 </div>
                 <label className="text-xs font-semibold text-stone-500 uppercase">Endereço (opcional)</label>
                 <input value={form.endereco} onChange={(e) => setForm({ ...form, endereco: e.target.value })} className="w-full border border-stone-300 rounded-lg p-2.5 mb-3 mt-1" />
+
+                {form.id && (
+                  <label className="flex items-center gap-2 text-sm text-stone-600 mb-3 tap-target">
+                    <input type="checkbox" checked={!!form.ativo} onChange={(e) => setForm({ ...form, ativo: e.target.checked })} className="w-5 h-5" />
+                    Mercado ativo (aparece nas novas listas)
+                  </label>
+                )}
 
                 <button onClick={() => setReordenando(true)} className="w-full text-left text-sm text-emerald-700 font-semibold border border-emerald-700 rounded-lg p-2.5 mb-4 tap-target">
                   📑 Ordem das categorias nesse mercado →
@@ -5291,8 +5451,8 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
                   <button className="w-full flex items-center justify-between p-3 text-left tap-target" onClick={() => setCategoriaExpandida(expandida ? null : cat.id)}>
                     <div><div className="font-semibold text-stone-800">{cat.icone} {cat.nome}</div><div className="text-xs text-stone-400">{produtosDaCategoria.length} produto(s)</div></div>
                     <div className="flex items-center gap-3 shrink-0">
-                      <span onClick={(e) => { e.stopPropagation(); setFormCategoria(cat); }} aria-label={`Editar categoria ${cat.nome}`} className="text-stone-400 tap-target">✏️</span>
-                      <span onClick={(e) => { e.stopPropagation(); removerCategoria(cat); }} aria-label={`Excluir categoria ${cat.nome}`} className="text-red-400 tap-target">🗑️</span>
+                      <button onClick={(e) => { e.stopPropagation(); setFormCategoria(cat); }} aria-label={`Editar categoria ${cat.nome}`} className="text-stone-400 tap-target">✏️</button>
+                      <button onClick={(e) => { e.stopPropagation(); removerCategoria(cat); }} aria-label={`Excluir categoria ${cat.nome}`} className="text-red-400 tap-target">🗑️</button>
                       <span className="text-stone-400">{expandida ? "▾" : "▸"}</span>
                     </div>
                   </button>
@@ -5334,7 +5494,8 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
         </div>
       )}
 
-      {formVariante && <FormVariante catalogo={catalogo} variante={formVariante} setVariante={setFormVariante} sessoes={sessoes} onSalvar={salvarVariante} onFechar={() => setFormVariante(null)} onVerHistorico={() => { setHistoricoVarianteId(formVariante.id); setFormVariante(null); }} />}
+      {formVariante && <FormVariante catalogo={catalogo} variante={formVariante} setVariante={setFormVariante} sessoes={sessoes} onSalvar={salvarVariante} onFechar={() => setFormVariante(null)} onVerHistorico={() => { setHistoricoVarianteId(formVariante.id); setFormVariante(null); }}
+        onCriarMarca={(nome) => { const novaMarca = { id: uid(), nome }; setCatalogo((c) => ({ ...c, marcas: [...c.marcas, novaMarca] })); return novaMarca.id; }} />}
 
       {formMarca && (
         <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-50" onClick={() => setFormMarca(null)}>
@@ -5381,7 +5542,7 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
   );
 }
 
-function FormVariante({ catalogo, variante, setVariante, sessoes, onSalvar, onFechar, onVerHistorico }) {
+function FormVariante({ catalogo, variante, setVariante, sessoes, onSalvar, onFechar, onVerHistorico, onCriarMarca }) {
   useFecharComVoltar(true, onFechar);
   const [carregandoFoto, setCarregandoFoto] = useState(false);
   const [escaneando, setEscaneando] = useState(false);
@@ -5399,7 +5560,8 @@ function FormVariante({ catalogo, variante, setVariante, sessoes, onSalvar, onFe
     <div className="fixed inset-0 bg-white z-50 flex flex-col max-w-md mx-auto">
       <div className="flex items-center gap-3 p-4 border-b border-stone-200 shrink-0"><button onClick={onFechar} aria-label="Voltar" className="tap-target">←</button><h3 className="text-lg font-bold">{variante.id ? "Editar variante" : "Nova variante"}</h3></div>
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        <SeletorBusca label="Marca" opcoes={catalogo.marcas} valorId={variante.marca_id} onSelecionar={(id) => setVariante({ ...variante, marca_id: id })} permitirNenhum nenhumLabel="genérico" />
+        <SeletorBusca label="Marca" opcoes={catalogo.marcas} valorId={variante.marca_id} onSelecionar={(id) => setVariante({ ...variante, marca_id: id })} permitirNenhum nenhumLabel="genérico"
+          onCriarNovo={onCriarMarca ? (nome) => { const id = onCriarMarca(nome); setVariante((v) => ({ ...v, marca_id: id })); } : null} labelCriar="marca" />
 
         {variante.marca_id && (
           <label className="flex items-center gap-2 text-sm text-stone-700">
@@ -5693,16 +5855,29 @@ function ModalNovaSessao({ catalogo, sessoes, setSessoes, onCriada, onClose }) {
 function FormNovoItemRapido({ catalogo, setCatalogo, codigoBarrasInicial, onCriado, onCancelar }) {
   const [nome, setNome] = useState("");
   const [categoriaId, setCategoriaId] = useState(catalogo.categorias[0]?.id || "");
+  const [unidadePadrao, setUnidadePadrao] = useState("un");
   const [marcaId, setMarcaId] = useState(null);
-  const [tamanho, setTamanho] = useState("");
+  const [tamanhoQuantidade, setTamanhoQuantidade] = useState("");
+  const [tamanhoUnidade, setTamanhoUnidade] = useState("un");
+  const [tamanhoTexto, setTamanhoTexto] = useState("");
   const [codigoBarras, setCodigoBarras] = useState(codigoBarrasInicial || "");
   const [escaneando, setEscaneando] = useState(false);
+
+  /* Etapa sobre criar item/marca no fluxo de compra: cria a marca ali mesmo, sem sair do fluxo —
+     esse componente já tem setCatalogo, então não precisa de callback vindo de fora (diferente
+     do FormVariante, que recebe onCriarMarca do pai). */
+  function criarMarca(novoNome) {
+    const novaMarca = { id: uid(), nome: novoNome };
+    setCatalogo((c) => ({ ...c, marcas: [...c.marcas, novaMarca] }));
+    setMarcaId(novaMarca.id);
+  }
 
   function salvar() {
     if (!nome.trim() || !categoriaId) return;
     const categoria = by(catalogo.categorias, categoriaId);
-    const novoProduto = { id: uid(), nome: nome.trim(), descricao: "", categoria_id: categoriaId, unidade_padrao: "un" };
-    const novaVariante = { id: uid(), produto_id: novoProduto.id, marca_id: marcaId, tamanho, tamanho_quantidade: null, tamanho_unidade: "un", codigo_barras: codigoBarras, descricao_variante: "", foto: null, tabela_nutricional: null, favorita: false, observacao: "" };
+    const qtdNum = tamanhoQuantidade === "" ? null : parseFloat(tamanhoQuantidade);
+    const novoProduto = { id: uid(), nome: nome.trim(), descricao: "", categoria_id: categoriaId, unidade_padrao: unidadePadrao };
+    const novaVariante = { id: uid(), produto_id: novoProduto.id, marca_id: marcaId, tamanho: tamanhoTexto, tamanho_quantidade: qtdNum, tamanho_unidade: qtdNum ? tamanhoUnidade : null, codigo_barras: codigoBarras, descricao_variante: "", foto: null, tabela_nutricional: null, favorita: false, observacao: "" };
     setCatalogo((c) => ({ ...c, produtos: [...c.produtos, novoProduto], variantes: [...c.variantes, novaVariante] }));
     onCriado(novaVariante.id);
   }
@@ -5714,8 +5889,22 @@ function FormNovoItemRapido({ catalogo, setCatalogo, codigoBarrasInicial, onCria
       <select value={categoriaId} onChange={(e) => setCategoriaId(e.target.value)} className="w-full border border-stone-300 rounded-lg p-2.5" aria-label="Categoria">
         {catalogo.categorias.map((c) => <option key={c.id} value={c.id}>{c.icone} {c.nome}</option>)}
       </select>
-      <SeletorBusca label={null} opcoes={catalogo.marcas} valorId={marcaId} onSelecionar={setMarcaId} permitirNenhum nenhumLabel="Marca (opcional)" />
-      <input value={tamanho} onChange={(e) => setTamanho(e.target.value)} placeholder="Tamanho (opcional)" className="w-full border border-stone-300 rounded-lg p-2.5" />
+      <div>
+        <label className="text-xs font-semibold text-stone-500 uppercase">Unidade padrão</label>
+        <div className="flex gap-1.5 mt-1">{["kg", "l", "un", "pacote"].map((u) => <Chip key={u} selected={unidadePadrao === u} onClick={() => setUnidadePadrao(u)}>{u}</Chip>)}</div>
+      </div>
+      <SeletorBusca label={null} opcoes={catalogo.marcas} valorId={marcaId} onSelecionar={setMarcaId} permitirNenhum nenhumLabel="Marca (opcional)" onCriarNovo={criarMarca} labelCriar="marca" />
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="text-xs font-semibold text-stone-500 uppercase">Quantidade (opcional)</label>
+          <input type="number" step="0.01" value={tamanhoQuantidade} onChange={(e) => setTamanhoQuantidade(e.target.value)} className="w-full border border-stone-300 rounded-lg p-2.5 mt-1 font-mono2" placeholder="0.9" />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-stone-500 uppercase">Unidade</label>
+          <div className="flex gap-1 mt-1">{["kg", "l", "un"].map((u) => <Chip key={u} selected={tamanhoUnidade === u} onClick={() => setTamanhoUnidade(u)}>{u}</Chip>)}</div>
+        </div>
+      </div>
+      <input value={tamanhoTexto} onChange={(e) => setTamanhoTexto(e.target.value)} placeholder={tamanhoQuantidade ? `auto: ${tamanhoQuantidade}${tamanhoUnidade}` : "Tamanho em texto (opcional, ex: pacote 12un)"} className="w-full border border-stone-300 rounded-lg p-2.5" />
       <div className="flex gap-2">
         <input value={codigoBarras} onChange={(e) => setCodigoBarras(e.target.value)} placeholder="Código de barras (opcional)" className="flex-1 border border-stone-300 rounded-lg p-2.5 font-mono2 text-sm" />
         <button onClick={() => setEscaneando(true)} aria-label="Ler código de barras pela câmera" className="border border-stone-300 rounded-lg px-3 tap-target text-stone-700"><IconeCodigoBarras /></button>
@@ -5873,10 +6062,10 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
     if (promocaoAtual) {
       const resultado = calcularPrecoComPromocao(preco, qtd, promocaoAtual);
       if (!resultado.ativada) { alert(`Faltam ${resultado.faltam} unidade(s) pra ativar essa promoção. Aumente a quantidade ou remova a promoção pra adicionar sem desconto.`); return; }
-      onAdd({ id: uid(), produto_variante_id: varianteId, quantidade: qtd, unidade, preco_pago: resultado.precoEfetivo, preco_normal: preco, promocao: promocaoAtual, subtotal: resultado.precoEfetivo * qtd, comprado: false });
+      onAdd({ id: uid(), produto_variante_id: varianteId, quantidade: qtd, unidade, preco_pago: resultado.precoEfetivo, preco_normal: preco, promocao: promocaoAtual, subtotal: multiplicarValor(resultado.precoEfetivo, qtd), comprado: false });
       return;
     }
-    onAdd({ id: uid(), produto_variante_id: varianteId, quantidade: qtd, unidade, preco_pago: preco, preco_normal: null, promocao: null, subtotal: preco != null ? preco * qtd : null, comprado: false });
+    onAdd({ id: uid(), produto_variante_id: varianteId, quantidade: qtd, unidade, preco_pago: preco, preco_normal: null, promocao: null, subtotal: preco != null ? multiplicarValor(preco, qtd) : null, comprado: false });
   }
 
   const historicoGeral = varianteId ? calcHistorico(sessoes, varianteId, unidade) : null;
@@ -5920,14 +6109,6 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
             {catalogo.categorias.map((c) => <Chip key={c.id} selected={categoriaFiltro === c.id} onClick={() => setCategoriaFiltro(categoriaFiltro === c.id ? null : c.id)}>{c.icone} {c.nome}</Chip>)}
           </div>
 
-          {criandoNovo ? (
-            <FormNovoItemRapido catalogo={catalogo} setCatalogo={setCatalogo} codigoBarrasInicial={codigoParaNovoItem} onCriado={escolherVariante} onCancelar={() => { setCriandoNovo(false); setCodigoParaNovoItem(null); }} />
-          ) : (
-            <button onClick={() => setCriandoNovo(true)} className="w-full text-left text-sm text-emerald-700 font-semibold border border-dashed border-emerald-400 rounded-lg p-2.5 tap-target">
-              + Cadastrar item novo
-            </button>
-          )}
-
           {!busca.trim() && !categoriaFiltro && !criandoNovo && !!frequentes.length && (
             <div>
               <div className="text-xs font-semibold text-stone-400 uppercase mb-2">Comprados com frequência</div>
@@ -5964,8 +6145,18 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
                   </div>
                 );
               })}
-              {!gruposFiltrados.length && <p className="text-stone-400 text-sm text-center py-6">Nada encontrado. Cadastre novos itens na aba <b>Produtos</b>.</p>}
+              {!gruposFiltrados.length && <p className="text-stone-400 text-sm text-center py-6">Nada encontrado. Toca em "+ Cadastrar item novo" abaixo pra criar.</p>}
             </div>
+          )}
+
+          {/* Etapa sobre o botão de criar item competir com a busca: desce pra depois dos
+              resultados — só compete por atenção quando você já olhou e não achou, não antes. */}
+          {criandoNovo ? (
+            <FormNovoItemRapido catalogo={catalogo} setCatalogo={setCatalogo} codigoBarrasInicial={codigoParaNovoItem} onCriado={escolherVariante} onCancelar={() => { setCriandoNovo(false); setCodigoParaNovoItem(null); }} />
+          ) : (
+            <button onClick={() => setCriandoNovo(true)} className="w-full text-left text-sm text-emerald-700 font-semibold border border-dashed border-emerald-400 rounded-lg p-2.5 tap-target">
+              + Cadastrar item novo
+            </button>
           )}
         </div>
       )}
@@ -6024,7 +6215,10 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
             </div>
 
             <div>
-              <div className="text-xs font-semibold text-stone-400 uppercase mb-2">{promocaoAtual ? "Preço normal (sem desconto)" : "Preço que você vai pagar aqui (opcional)"}</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold text-stone-400 uppercase">{promocaoAtual ? "Preço normal (sem desconto)" : "Preço que você vai pagar aqui (opcional)"}</div>
+                <span className="text-[10px] text-stone-400 font-mono2 bg-stone-100 rounded px-1.5 py-0.5 shrink-0">350→R$3,50</span>
+              </div>
               <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5">
                 <span className="text-stone-400 font-mono2">R$</span>
                 <input value={precoTexto} onChange={(e) => setPrecoTexto(sanitizarEntradaPreco(e.target.value))} placeholder="ex: 350 = R$3,50" className="font-mono2 font-bold text-lg flex-1 outline-none" aria-label="Preço" />
@@ -6081,7 +6275,17 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
       </button>
 
       <div className="flex items-center gap-2.5 shrink-0">
-        <button onClick={() => onToggleComprado(item)} aria-label={item.comprado ? `Desmarcar ${produto?.nome} como comprado` : `Marcar ${produto?.nome} como comprado`}
+        <button
+          onClick={() => {
+            /* Etapa sobre "comprado sem preço": marcar como comprado sem preço nenhum não faz
+               sentido — é o núcleo do app (controlar gasto real). Em vez de só bloquear, abre o
+               editor já pedindo o preço; salvando lá, o item já sai marcado como comprado, sem
+               precisar tocar aqui de novo. Desmarcar (já comprado → não comprado) continua direto,
+               sem pedir nada — isso nunca teve problema. */
+            if (!item.comprado && item.preco_pago == null) { onAbrirEditor(item, true); return; }
+            onToggleComprado(item);
+          }}
+          aria-label={item.comprado ? `Desmarcar ${produto?.nome} como comprado` : `Marcar ${produto?.nome} como comprado`}
           className={`tap-target rounded-md border-2 flex items-center justify-center text-base font-bold ${item.comprado ? "bg-emerald-600 border-emerald-600 text-white" : "border-stone-300 bg-white text-transparent"}`}>
           ✓
         </button>
@@ -6176,7 +6380,7 @@ function SecaoPromocao({ precoNormalNum, quantidade, unidade, mediaRef, valorIni
   );
 }
 
-function ModalEditarItem({ item, catalogo, setCatalogo, sessoes, sessaoAtiva, precoIaCache, setPrecoIaCache, apiKey, onChange, onRemoverConfirmado, onClose }) {
+function ModalEditarItem({ item, marcarComprado, catalogo, setCatalogo, sessoes, sessaoAtiva, precoIaCache, setPrecoIaCache, apiKey, onChange, onRemoverConfirmado, onClose }) {
   useFecharComVoltar(true, onClose);
   const variante = by(catalogo.variantes, item.produto_variante_id);
   const produto = variante && by(catalogo.produtos, variante.produto_id);
@@ -6225,7 +6429,11 @@ function ModalEditarItem({ item, catalogo, setCatalogo, sessoes, sessaoAtiva, pr
       preco_pago: precoEfetivo,
       preco_normal: promocaoAtual ? precoNum : null,
       promocao: promocaoAtual,
-      subtotal: precoEfetivo != null ? precoEfetivo * qtdNum : null,
+      subtotal: precoEfetivo != null ? multiplicarValor(precoEfetivo, qtdNum) : null,
+      /* Veio do toque no ✓ sem preço (seção sobre "comprado sem preço") — só marca como
+         comprado se realmente saiu com um preço; se a pessoa salvou sem preencher nada, não
+         reproduz o mesmo bug por outro caminho. */
+      ...(marcarComprado && precoEfetivo != null ? { comprado: true } : {}),
     });
     onClose();
   }
@@ -6243,6 +6451,7 @@ function ModalEditarItem({ item, catalogo, setCatalogo, sessoes, sessaoAtiva, pr
           </div>
         </div>
         {variante?.observacao && <div className="text-xs text-amber-700 bg-amber-50 rounded-lg px-2 py-1.5 mb-3">💬 {variante.observacao}</div>}
+        {marcarComprado && <div className="text-xs text-emerald-700 bg-emerald-50 rounded-lg px-2.5 py-2 mb-3 font-semibold">Preenche o preço pra marcar como comprado.</div>}
 
         <button onClick={() => setEscaneando(true)} className="w-full text-left text-xs text-stone-500 border border-stone-200 rounded-lg px-2.5 py-2 mb-3 tap-target">
           <span className="inline-flex items-center gap-1"><IconeCodigoBarras size={16} /> {variante?.codigo_barras ? `Código vinculado: ${variante.codigo_barras}` : "Vincular código de barras a esse item"}</span>
@@ -6282,7 +6491,10 @@ function ModalEditarItem({ item, catalogo, setCatalogo, sessoes, sessaoAtiva, pr
         )}
         {!(variante?.tamanho_quantidade && unidade === "un") && <div className="mb-3" />}
 
-        <label className="text-xs font-semibold text-stone-500 uppercase">{promocaoAtual ? `Preço normal (sem desconto), por ${unidade}` : `Preço (por ${unidade})`}</label>
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-semibold text-stone-500 uppercase">{promocaoAtual ? `Preço normal (sem desconto), por ${unidade}` : `Preço (por ${unidade})`}</label>
+          <span className="text-[10px] text-stone-400 font-mono2 bg-stone-100 rounded px-1.5 py-0.5 shrink-0">350→R$3,50</span>
+        </div>
         <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5 mt-1">
           <span className="text-stone-400 font-mono2">R$</span>
           <input value={precoTexto} onChange={(e) => { setPrecoTexto(sanitizarEntradaPreco(e.target.value)); setAlertaOutlier(false); }} placeholder="ex: 350 = R$3,50" className="font-mono2 font-bold text-lg flex-1 outline-none" aria-label="Preço" />
@@ -6304,7 +6516,7 @@ function ModalEditarItem({ item, catalogo, setCatalogo, sessoes, sessaoAtiva, pr
 
         <div className="flex gap-2 mt-2">
           <button onClick={onClose} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
-          <button onClick={() => salvar(false)} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Salvar</button>
+          <button onClick={() => salvar(false)} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">{marcarComprado ? "✓ Marcar como comprado" : "Salvar"}</button>
         </div>
         <button onClick={() => onRemoverConfirmado(item)} className="w-full text-center text-red-400 text-xs font-semibold mt-3 tap-target">Remover item da lista</button>
       </div>
@@ -6338,7 +6550,7 @@ function ModalLerCupomOcr({ onValorLido, onFechar }) {
     setProcessando(true);
     try {
       const [comprimida, Tesseract] = await Promise.all([resizeImage(file, 1000, 0.75), carregarTesseract()]);
-      const resultado = await Tesseract.recognize(file, "por");
+      const resultado = await Tesseract.recognize(comprimida, "por");
       const total = extrairTotalDoTextoOcr(resultado.data.text);
       setFotoBase64(comprimida);
       if (total != null) { setValorEncontrado(total); setValorTexto(formatarValorCampo(total)); }
@@ -6349,7 +6561,13 @@ function ModalLerCupomOcr({ onValorLido, onFechar }) {
 
   function confirmar() {
     const valor = parsePrecoInteligente(valorTexto);
-    if (valor != null) onValorLido({ valor, arquivoBase64: fotoBase64, mimeType: "image/jpeg" });
+    if (valor != null) {
+      const htmlReconstruido = montarHtmlRecibo({
+        valorTotal: valor,
+        avisoOrigem: "Lido por foto (OCR) — só o total, sem itens. Confira contra a foto original se tiver dúvida.",
+      });
+      onValorLido({ valor, arquivoBase64: fotoBase64, mimeType: "image/jpeg", htmlReconstruido });
+    }
   }
 
   return (
@@ -6393,7 +6611,7 @@ function ModalLerCupomOcr({ onValorLido, onFechar }) {
 function ModalConferenciaNfe({ nfeInicial, itens, catalogo, onConfirmar, onFechar }) {
   useFecharComVoltar(true, onFechar);
   const [nfe, setNfe] = useState(() => {
-    const copia = { ...nfeInicial, itens: nfeInicial.itens.map((l) => ({ ...l })) };
+    const copia = { ...nfeInicial, itens: agruparLinhasNfePorDescricao(nfeInicial.itens).map((l) => ({ ...l })) };
     const usados = new Set();
     for (const linha of copia.itens) {
       const candidatos = itens.filter((it) => it.comprado && !usados.has(it.id));
@@ -6445,7 +6663,7 @@ function ModalConferenciaNfe({ nfeInicial, itens, catalogo, onConfirmar, onFecha
                   <div key={linha.id} className="bg-white border border-amber-300 rounded-xl p-3">
                     <div className="text-xs text-amber-700 uppercase font-semibold mb-1">Não encontrado na sua lista</div>
                     <div className="text-sm font-semibold text-stone-700 truncate">{linha.descricao}</div>
-                    <div className="text-xs font-mono2 text-stone-500 mb-2">{linha.quantidade}x · {brl(linha.valor_total)}</div>
+                    <div className="text-xs font-mono2 text-stone-500 mb-2">{linha.quantidade}x · {brl(linha.valor_total)}{linha.linhasOriginais > 1 ? ` · combina ${linha.linhasOriginais} linhas da nota` : ""}</div>
                     {vinculando === linha.id ? (
                       <div className="space-y-1 border-t border-stone-100 pt-2">
                         {itens.filter((it) => it.comprado).map((it) => {
@@ -6476,7 +6694,7 @@ function ModalConferenciaNfe({ nfeInicial, itens, catalogo, onConfirmar, onFecha
                     <div className="text-sm font-semibold text-stone-700 truncate">{p?.nome}</div>
                     <span className="text-sm shrink-0">{precoIgual ? "✓" : "⚠️"}</span>
                   </div>
-                  <div className="text-xs text-stone-400 truncate mb-1">na nota: "{linha.descricao}"</div>
+                  <div className="text-xs text-stone-400 truncate mb-1">na nota: "{linha.descricao}"{linha.linhasOriginais > 1 ? ` (${linha.linhasOriginais} linhas somadas)` : ""}</div>
                   {precoIgual ? (
                     <div className="text-xs font-mono2 text-emerald-700">Confere: {brl(linha.valor_total)}</div>
                   ) : (
@@ -6527,14 +6745,16 @@ function ModalConferenciaNfe({ nfeInicial, itens, catalogo, onConfirmar, onFecha
 ========================================================= */
 function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado, onClose, arquivoCompartilhado, onUsarArquivoCompartilhado }) {
   useFecharComVoltar(true, onClose);
-  const totalCalc = sessao.itens.reduce((a, it) => a + (it.subtotal || 0), 0);
+  const totalCalc = somarValores(...sessao.itens.map((it) => it.subtotal || 0));
   const [notaTexto, setNotaTexto] = useState("");
   const [nfeParaConferir, setNfeParaConferir] = useState(null);
   const [erroNfe, setErroNfe] = useState(null);
   const [confirmarSemNfe, setConfirmarSemNfe] = useState(false);
+  const [perguntaRascunho, setPerguntaRascunho] = useState(null); // null = não perguntou; array = perguntando
   const [lendoQr, setLendoQr] = useState(false);
   const [chaveDoQr, setChaveDoQr] = useState(null);
   const [digitandoChave, setDigitandoChave] = useState(false);
+  const [maisOpcoesNfe, setMaisOpcoesNfe] = useState(false); // Etapa sobre simplificar anexar NF: 1 botão + escape hatch
   const [chaveDigitada, setChaveDigitada] = useState("");
   function usarChaveDigitada() {
     const limpa = chaveDigitada.replace(/\D/g, "");
@@ -6542,6 +6762,12 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
     const duplicada = sessaoComMesmaNfe(sessoes, limpa, sessao.id);
     if (duplicada) { setErroNfe("Essa nota já foi anexada numa outra compra do histórico."); return; }
     setErroNfe(null);
+    /* Etapa sobre pré-preencher a consulta oficial: não dá pra montar o link já preenchido pra
+       chave digitada na mão (o site da Sefaz depende de token de sessão, e o formato do QR exige
+       um hash que só o próprio QR carrega) — copiar pro clipboard é o substituto que garantidamente
+       funciona: na página do governo, é só encostar no campo e colar, em vez de redigitar 44
+       números. Falha em silêncio se o navegador negar a permissão (não é crítico pro fluxo). */
+    navigator.clipboard?.writeText(limpa).catch(() => {});
     setChaveDoQr({ chave: limpa, url: null });
     setDigitandoChave(false);
     setChaveDigitada("");
@@ -6555,7 +6781,16 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
       const duplicada = sessaoComMesmaNfe(sessoes, nfeLida.chave_acesso, sessao.id);
       if (duplicada) { setErroNfe("Essa nota já foi anexada numa outra compra do histórico."); return; }
       setErroNfe(null);
-      setNfeParaConferir(nfeLida);
+      /* Guarda o texto colado também, no mesmo formato que o PDF já usa (arquivo_base64 +
+         mime_type + nome_arquivo) — antes disso era o único dos 4 caminhos de leitura de nota
+         que processava e descartava, sem deixar nada salvo pra reconferir depois. */
+      const arquivoBase64 = "data:text/plain;charset=utf-8;base64," + btoa(unescape(encodeURIComponent(textoColado)));
+      const htmlReconstruido = montarHtmlRecibo({
+        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, dataEmissao: nfeLida.data_emissao,
+        valorTotal: nfeLida.valor_total, itens: nfeLida.itens, chaveAcesso: nfeLida.chave_acesso,
+        avisoOrigem: "Reconstruído a partir do texto colado da consulta oficial — não é o documento oficial.",
+      });
+      setNfeParaConferir({ ...nfeLida, arquivo_base64: arquivoBase64, mime_type: "text/plain", nome_arquivo: "nfce-consulta.txt", html_reconstruido: htmlReconstruido });
       setColandoTexto(false);
       setTextoColado("");
     } catch (err) { setErroNfe(err.message); }
@@ -6599,7 +6834,12 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
         r.onerror = reject;
         r.readAsDataURL(file);
       });
-      setNfeParaConferir({ ...nfeLida, arquivo_base64: arquivoBase64, mime_type: "application/pdf", nome_arquivo: file.name });
+      const htmlReconstruido = montarHtmlRecibo({
+        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, dataEmissao: nfeLida.data_emissao,
+        valorTotal: nfeLida.valor_total, itens: nfeLida.itens, chaveAcesso: nfeLida.chave_acesso,
+        avisoOrigem: "Reconstruído a partir do PDF da nota — não é o documento oficial.",
+      });
+      setNfeParaConferir({ ...nfeLida, arquivo_base64: arquivoBase64, mime_type: "application/pdf", nome_arquivo: file.name, html_reconstruido: htmlReconstruido });
     } catch (err) { setErroNfe(err.message); }
   }
   /* Compartilhamento nativo do Android: se chegou um arquivo pendente (PDF do DANFE, por
@@ -6626,15 +6866,26 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
             : it);
         }
       }
-      return { ...s, itens: itensAtualizados, nfe: { ...nfeConferida, conferida: true } };
+      /* Etapa sobre desconto de clube: só tenta DEPOIS dos ajustes item a item acima, sobre o
+         resultado já corrigido. Nunca silencioso — o ajuste fica registrado em
+         nfe.desconto_clube_ajustes pra aparecer explícito na Prévia antes de finalizar (seção
+         sobre a tela mostrar preço de tabela riscado → preço real). */
+      const ajustes = tentarExplicarDescontoClube(itensAtualizados, nfeConferida.valor_desconto, sessoes, catalogo, sessao.mercado_id);
+      if (ajustes) {
+        itensAtualizados = itensAtualizados.map((it) => {
+          const ajuste = ajustes.find((a) => a.itemId === it.id);
+          return ajuste ? { ...it, preco_pago: ajuste.precoNovo, subtotal: multiplicarValor(ajuste.precoNovo, it.quantidade || 1) } : it;
+        });
+      }
+      return { ...s, itens: itensAtualizados, nfe: { ...nfeConferida, conferida: true, desconto_clube_ajustes: ajustes } };
     }));
     setNfeParaConferir(null);
   }
 
-  function finalizar() {
-    if (!sessao.nfe?.conferida && !confirmarSemNfe) { setConfirmarSemNfe(true); return; }
-    setConfirmarSemNfe(false);
-    const naoComprados = sessao.itens.filter((it) => !it.comprado);
+  /* A finalização de verdade — separada de finalizar() pra poder ser chamada só depois de
+     resolvida a pergunta sobre itens não comprados (antes era um window.confirm síncrono aqui
+     dentro; agora é ModalConfirmar, que é assíncrono, então precisa desse corte). */
+  function executarFinalizacao(naoComprados, levarParaRascunho) {
     const snapshot = snapshotCategorias(sessao.itens, catalogo);
     const dataFechamento = new Date().toISOString();
 
@@ -6660,13 +6911,21 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
         }
         return { ...s, status: "fechada", reaberta_para_correcao: false, valor_nota_fiscal: nota, fechada_em: dataFechamento, grafico_categorias: snapshot, nfe: nfeAtualizada };
       });
-      if (naoComprados.length && window.confirm(`${naoComprados.length} item(ns) não foram comprados. Levar pra uma nova lista rascunho?`)) {
+      if (naoComprados.length && levarParaRascunho) {
         novo = [...novo, { id: uid(), mercado_id: sessao.mercado_id, data_hora: new Date().toISOString(), status: "em_andamento", origem: "manual", itens: naoComprados.map((it) => ({ ...it, id: uid(), preco_pago: null, subtotal: null, comprado: false })), valor_nota_fiscal: null, grafico_categorias: null }];
       }
       return novo;
     });
     onClose();
     onFinalizado(sessao.id);
+  }
+
+  function finalizar() {
+    if (!sessao.nfe?.conferida && !confirmarSemNfe) { setConfirmarSemNfe(true); return; }
+    setConfirmarSemNfe(false);
+    const naoComprados = sessao.itens.filter((it) => !it.comprado);
+    if (naoComprados.length) { setPerguntaRascunho(naoComprados); return; }
+    executarFinalizacao(naoComprados, false);
   }
 
   return (
@@ -6681,12 +6940,27 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
             {comprados.map((it) => {
               const v = by(catalogo.variantes, it.produto_variante_id);
               const p = v && by(catalogo.produtos, v.produto_id);
-              return <div key={it.id} className="flex justify-between gap-2 text-xs font-mono2 mb-1"><span className="truncate">{p?.nome?.toUpperCase()}</span><span className="whitespace-nowrap">{it.quantidade}{it.unidade} {brl(it.subtotal)}</span></div>;
+              const ajuste = sessao.nfe?.desconto_clube_ajustes?.find((a) => a.itemId === it.id);
+              return (
+                <div key={it.id} className="flex justify-between gap-2 text-xs font-mono2 mb-1">
+                  <span className="truncate">{p?.nome?.toUpperCase()}</span>
+                  <span className="whitespace-nowrap">
+                    {it.quantidade}{it.unidade}{" "}
+                    {ajuste ? <><span className="line-through text-stone-400">{brl(ajuste.precoAntigo * ajuste.quantidade)}</span> <span className="text-emerald-700 font-semibold">{brl(it.subtotal)}</span></> : brl(it.subtotal)}
+                  </span>
+                </div>
+              );
             })}
             {!comprados.length && <div className="text-center text-xs text-stone-400 py-2">Nenhum item marcado como comprado.</div>}
             <div className="border-t border-dashed border-stone-400 my-2" />
             <div className="flex justify-between font-mono2 font-bold"><span>TOTAL CALCULADO</span><span>{brl(totalCalc)}</span></div>
           </div>
+
+          {!!sessao.nfe?.desconto_clube_ajustes?.length && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 mb-3 text-xs text-emerald-800">
+              🎟️ <strong>Desconto de clube identificado</strong> — {sessao.nfe.desconto_clube_ajustes.length} item(ns) com preço acima do seu histórico, e a diferença bateu exata com o desconto da nota. Preço corrigido pro valor real pago (visível riscado acima).
+            </div>
+          )}
 
           <div className="bg-white border border-stone-200 rounded-xl p-3 mb-3">
             <div className="text-xs font-semibold text-stone-400 uppercase mb-2">Gasto por categoria</div>
@@ -6715,43 +6989,51 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
                   📎 Anexar PDF da nota
                   <input type="file" accept=".pdf,application/pdf" onChange={aoEscolherArquivo} className="hidden" />
                 </label>
-                <button onClick={() => setLendoQr(true)} className="w-full flex items-center justify-center gap-2 border border-stone-300 rounded-xl py-2.5 text-sm text-stone-500 mt-2 tap-target">
-                  📷 Ler QR Code da nota
-                </button>
-                {!digitandoChave ? (
-                  <button onClick={() => setDigitandoChave(true)} className="text-xs text-stone-400 underline mt-1.5 tap-target">QR não lê? Digitar a chave de acesso manualmente</button>
-                ) : (
-                  <div className="mt-1.5 flex gap-1.5">
-                    <input value={chaveDigitada} onChange={(e) => setChaveDigitada(e.target.value)} placeholder="os 44 números da chave (embaixo do QR)" className="flex-1 border border-stone-300 rounded-lg p-2 font-mono2 text-xs" aria-label="Chave de acesso da nota" />
-                    <button onClick={usarChaveDigitada} className="bg-emerald-700 text-white text-xs font-semibold px-3 rounded-lg tap-target shrink-0">Usar</button>
-                  </div>
-                )}
                 {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
-                {chaveDoQr && !colandoTexto && (
-                  <div className="bg-stone-50 rounded-lg p-2.5 mt-2 text-xs">
-                    <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. Duas formas de trazer os dados: abre a consulta oficial, seleciona tudo (Ctrl+A) e copia — ou baixa o PDF pelo Meu Danfe.</div>
-                    <div className="flex flex-wrap gap-x-3 gap-y-1">
-                      <button onClick={() => window.open(montarUrlConsultaOficial(chaveDoQr), "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir consulta oficial →</button>
-                      <button onClick={() => setColandoTexto(true)} className="text-emerald-700 font-semibold underline tap-target">Já copiei, colar aqui →</button>
-                      <button onClick={() => window.open(montarUrlMeuDanfe(chaveDoQr.chave), "_blank")} className="text-stone-400 underline tap-target">Baixar PDF (Meu Danfe)</button>
-                    </div>
-                    <div className="flex items-center gap-2 mt-2 pt-2 border-t border-stone-200">
-                      <span className="font-mono2 text-[11px] text-stone-400 flex-1 truncate">{chaveDoQr.chave}</span>
-                      <button onClick={() => navigator.clipboard?.writeText(chaveDoQr.chave)} className="text-emerald-700 font-semibold shrink-0 tap-target">Copiar chave</button>
-                    </div>
+
+                {!maisOpcoesNfe ? (
+                  <button onClick={() => setMaisOpcoesNfe(true)} className="text-xs text-stone-400 underline mt-2 block mx-auto tap-target">Não tenho o PDF agora →</button>
+                ) : (
+                  <div className="mt-3 pt-3 border-t border-stone-200 border-dashed">
+                    <button onClick={() => setLendoQr(true)} className="w-full flex items-center justify-center gap-2 border border-stone-300 rounded-xl py-2.5 text-sm text-stone-500 tap-target">
+                      📷 Ler QR Code da nota
+                    </button>
+                    {!digitandoChave ? (
+                      <button onClick={() => setDigitandoChave(true)} className="text-xs text-stone-400 underline mt-1.5 tap-target">QR não lê? Digitar a chave de acesso manualmente</button>
+                    ) : (
+                      <div className="mt-1.5 flex gap-1.5">
+                        <input value={chaveDigitada} onChange={(e) => setChaveDigitada(e.target.value)} placeholder="os 44 números da chave (embaixo do QR)" className="flex-1 border border-stone-300 rounded-lg p-2 font-mono2 text-xs" aria-label="Chave de acesso da nota" />
+                        <button onClick={usarChaveDigitada} className="bg-emerald-700 text-white text-xs font-semibold px-3 rounded-lg tap-target shrink-0">Usar</button>
+                      </div>
+                    )}
+                    {chaveDoQr && !colandoTexto && (
+                      <div className="bg-stone-50 rounded-lg p-2.5 mt-2 text-xs">
+                        <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. Duas formas de trazer os dados: abre a consulta oficial, seleciona tudo (Ctrl+A) e copia — ou baixa o PDF pelo Meu Danfe.
+                        {!chaveDoQr.url && " Já copiei a chave — é só colar no campo \"Chave de acesso\" da página."}</div>
+                        <div className="flex flex-wrap gap-x-3 gap-y-1">
+                          <button onClick={() => window.open(montarUrlConsultaOficial(chaveDoQr), "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir consulta oficial →</button>
+                          <button onClick={() => setColandoTexto(true)} className="text-emerald-700 font-semibold underline tap-target">Já copiei, colar aqui →</button>
+                          <button onClick={() => window.open(montarUrlMeuDanfe(chaveDoQr.chave), "_blank")} className="text-stone-400 underline tap-target">Baixar PDF (Meu Danfe)</button>
+                        </div>
+                        <div className="flex items-center gap-2 mt-2 pt-2 border-t border-stone-200">
+                          <span className="font-mono2 text-[11px] text-stone-400 flex-1 truncate">{chaveDoQr.chave}</span>
+                          <button onClick={() => navigator.clipboard?.writeText(chaveDoQr.chave)} className="text-emerald-700 font-semibold shrink-0 tap-target">Copiar chave</button>
+                        </div>
+                      </div>
+                    )}
+                    {colandoTexto && (
+                      <div className="bg-stone-50 rounded-lg p-2.5 mt-2">
+                        <p className="text-xs text-stone-500 mb-2">Cola aqui o texto inteiro que você copiou da página (do nome do mercado até a chave de acesso).</p>
+                        <textarea value={textoColado} onChange={(e) => setTextoColado(e.target.value)} rows={4} placeholder="Cola aqui (Ctrl+V)..." className="w-full border border-stone-300 rounded-lg p-2 text-xs font-mono2" aria-label="Texto colado da consulta da nota" />
+                        <div className="flex gap-2 mt-2">
+                          <button onClick={() => { setColandoTexto(false); setTextoColado(""); }} className="flex-1 py-2 rounded-lg border border-stone-300 text-stone-600 text-xs font-semibold tap-target">Cancelar</button>
+                          <button onClick={processarTextoColado} disabled={!textoColado.trim()} className="flex-1 py-2 rounded-lg bg-emerald-700 text-white text-xs font-semibold tap-target disabled:opacity-40">Ler itens</button>
+                        </div>
+                      </div>
+                    )}
+                    <p className="text-xs text-stone-400 mt-2">Sem QR nem XML? <button onClick={() => setLendoOcr(true)} className="text-emerald-700 font-semibold underline tap-target">Ler o total por foto</button>, ou preencha manualmente abaixo.</p>
                   </div>
                 )}
-                {colandoTexto && (
-                  <div className="bg-stone-50 rounded-lg p-2.5 mt-2">
-                    <p className="text-xs text-stone-500 mb-2">Cola aqui o texto inteiro que você copiou da página (do nome do mercado até a chave de acesso).</p>
-                    <textarea value={textoColado} onChange={(e) => setTextoColado(e.target.value)} rows={4} placeholder="Cola aqui (Ctrl+V)..." className="w-full border border-stone-300 rounded-lg p-2 text-xs font-mono2" aria-label="Texto colado da consulta da nota" />
-                    <div className="flex gap-2 mt-2">
-                      <button onClick={() => { setColandoTexto(false); setTextoColado(""); }} className="flex-1 py-2 rounded-lg border border-stone-300 text-stone-600 text-xs font-semibold tap-target">Cancelar</button>
-                      <button onClick={processarTextoColado} disabled={!textoColado.trim()} className="flex-1 py-2 rounded-lg bg-emerald-700 text-white text-xs font-semibold tap-target disabled:opacity-40">Ler itens</button>
-                    </div>
-                  </div>
-                )}
-                <p className="text-xs text-stone-400 mt-2">Sem QR nem XML? <button onClick={() => setLendoOcr(true)} className="text-emerald-700 font-semibold underline tap-target">Ler o total por foto</button>, ou preencha manualmente abaixo.</p>
               </>
 
             )}
@@ -6785,13 +7067,13 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
       )}
       {lendoOcr && (
         <ModalLerCupomOcr
-          onValorLido={({ valor, arquivoBase64, mimeType }) => {
+          onValorLido={({ valor, arquivoBase64, mimeType, htmlReconstruido }) => {
             /* Mesmo formato de "nfe" que o PDF/texto colado já usam — reaproveita o mesmo trecho
                do finalizar() que troca o arquivo bruto por um documento de verdade no Finanças.
                Sem itens (foto só lê o total), por isso nasce direto como "conferida": não tem
                item nenhum pra conferir contra a lista, então não faz sentido pedir revisão. */
             setSessoes((ss) => ss.map((s) => (s.id === sessao.id
-              ? { ...s, nfe: { chave_acesso: null, cnpj_emit: null, nome_emit: null, data_emissao: null, valor_total: valor, itens: [], arquivo_base64: arquivoBase64, mime_type: mimeType, nome_arquivo: "cupom-foto.jpg", conferida: true } }
+              ? { ...s, nfe: { chave_acesso: null, cnpj_emit: null, nome_emit: null, data_emissao: null, valor_total: valor, itens: [], arquivo_base64: arquivoBase64, mime_type: mimeType, nome_arquivo: "cupom-foto.jpg", conferida: true, html_reconstruido: htmlReconstruido } }
               : s)));
             setLendoOcr(false);
           }}
@@ -6801,6 +7083,12 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
         <ModalConfirmar titulo="Finalizar sem nota fiscal" severo={false} textoConfirmar="Finalizar mesmo assim"
           mensagem="Os valores ficam sem conferência oficial da nota fiscal. Você pode anexar a nota depois, direto no histórico dessa compra."
           onConfirmar={finalizar} onCancelar={() => setConfirmarSemNfe(false)} />
+      )}
+      {perguntaRascunho && (
+        <ModalConfirmar titulo="Itens não comprados" severo={false} textoConfirmar="Levar pra lista nova"
+          mensagem={`${perguntaRascunho.length} item(ns) não foram comprados. Quer levar pra uma lista rascunho nova, pra não esquecer na próxima ida?`}
+          onConfirmar={() => { const nc = perguntaRascunho; setPerguntaRascunho(null); executarFinalizacao(nc, true); }}
+          onCancelar={() => { const nc = perguntaRascunho; setPerguntaRascunho(null); executarFinalizacao(nc, false); }} />
       )}
     </div>
   );
@@ -6839,7 +7127,8 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
   const [modalNova, setModalNova] = useState(false);
   const [modalAdd, setModalAdd] = useState(false);
   const [modalPrevia, setModalPrevia] = useState(false);
-  const [itemEditando, setItemEditando] = useState(null);
+  const [itemEditando, setItemEditandoRaw] = useState(null); // { item, marcarCompradoAoSalvar }
+  function abrirEditor(item, marcarCompradoAoSalvar) { setItemEditandoRaw({ item, marcarCompradoAoSalvar: !!marcarCompradoAoSalvar }); }
   const [confirmar, setConfirmar] = useState(null);
   const [modalOrcamento, setModalOrcamento] = useState(false);
 
@@ -6899,7 +7188,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
     setConfirmar({
       titulo: "Remover item", severo: false, textoConfirmar: "Remover",
       mensagem: `Remover "${p?.nome || "esse item"}" da lista?`,
-      acao: () => { atualizarSessao({ itens: sessaoAtiva.itens.filter((it) => it.id !== item.id) }); setConfirmar(null); setItemEditando(null); },
+      acao: () => { atualizarSessao({ itens: sessaoAtiva.itens.filter((it) => it.id !== item.id) }); setConfirmar(null); setItemEditandoRaw(null); },
     });
   }
   function cancelarCompra() {
@@ -6920,7 +7209,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
 
   const mercado = by(catalogo.mercados, sessaoAtiva.mercado_id);
   const itensCarrinhoParaTotal = sessaoAtiva.itens.filter((it) => it.comprado);
-  const totalAgora = itensCarrinhoParaTotal.reduce((a, it) => a + (it.subtotal || 0), 0);
+  const totalAgora = somarValores(...itensCarrinhoParaTotal.map((it) => it.subtotal || 0));
   const totalPrev = totalPrevisto(sessaoAtiva.itens, catalogo, sessoes, sessaoAtiva.mercado_id);
   const estourouOrcamento = sessaoAtiva.orcamento != null && totalAgora > sessaoAtiva.orcamento;
 
@@ -6997,7 +7286,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
                     <div className="text-xs uppercase tracking-wide text-stone-500 font-semibold mb-1">{grupo.icone} {grupo.nome}</div>
                     {grupo.itens.map((it) => (
                       <ItemLinha key={it.id} item={it} catalogo={catalogo} mediaRef={mediaRefPara(it)}
-                        onAbrirEditor={setItemEditando} onToggleComprado={toggleComprado} onRemoverConfirmado={pedirRemocao} />
+                        onAbrirEditor={abrirEditor} onToggleComprado={toggleComprado} onRemoverConfirmado={pedirRemocao} />
                     ))}
                   </div>
                 ))}
@@ -7012,7 +7301,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
                     <div className="text-xs uppercase tracking-wide text-stone-500 font-semibold mb-1">{grupo.icone} {grupo.nome}</div>
                     {grupo.itens.map((it) => (
                       <ItemLinha key={it.id} item={it} catalogo={catalogo} mediaRef={mediaRefPara(it)}
-                        onAbrirEditor={setItemEditando} onToggleComprado={toggleComprado} onRemoverConfirmado={pedirRemocao} />
+                        onAbrirEditor={abrirEditor} onToggleComprado={toggleComprado} onRemoverConfirmado={pedirRemocao} />
                     ))}
                   </div>
                 ))}
@@ -7046,8 +7335,8 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
         <ModalPreviaCompra catalogo={catalogo} sessao={sessaoAtiva} sessoes={sessoes} setSessoes={setSessoes} onClose={() => setModalPrevia(false)} onFinalizado={onSessaoFinalizada} arquivoCompartilhado={arquivoCompartilhado} onUsarArquivoCompartilhado={onUsarArquivoCompartilhado} />
       )}
       {itemEditando && (
-        <ModalEditarItem item={itemEditando} catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} sessaoAtiva={sessaoAtiva} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey}
-          onChange={(patch) => atualizarItem(itemEditando.id, patch)} onRemoverConfirmado={pedirRemocao} onClose={() => setItemEditando(null)} />
+        <ModalEditarItem item={itemEditando.item} marcarComprado={itemEditando.marcarCompradoAoSalvar} catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} sessaoAtiva={sessaoAtiva} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey}
+          onChange={(patch) => atualizarItem(itemEditando.item.id, patch)} onRemoverConfirmado={pedirRemocao} onClose={() => setItemEditandoRaw(null)} />
       )}
       {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
       {modalOrcamento && (
@@ -7065,13 +7354,14 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
   useFecharComVoltar(true, onClose);
   const mercado = by(catalogo.mercados, sessao.mercado_id);
   const comprados = sessao.itens.filter((it) => it.comprado);
-  const total = comprados.reduce((a, it) => a + (it.subtotal || 0), 0);
+  const total = somarValores(...comprados.map((it) => it.subtotal || 0));
   const [confirmar, setConfirmar] = useState(null);
   const [nfeParaConferir, setNfeParaConferir] = useState(null);
   const [erroNfe, setErroNfe] = useState(null);
   const [lendoQr, setLendoQr] = useState(false);
   const [chaveDoQr, setChaveDoQr] = useState(null);
   const [digitandoChave, setDigitandoChave] = useState(false);
+  const [maisOpcoesNfe, setMaisOpcoesNfe] = useState(false); // Etapa sobre simplificar anexar NF: 1 botão + escape hatch
   const [chaveDigitada, setChaveDigitada] = useState("");
   function usarChaveDigitada() {
     const limpa = chaveDigitada.replace(/\D/g, "");
@@ -7079,6 +7369,12 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
     const duplicada = sessaoComMesmaNfe(sessoes, limpa, sessao.id);
     if (duplicada) { setErroNfe("Essa nota já foi anexada numa outra compra do histórico."); return; }
     setErroNfe(null);
+    /* Etapa sobre pré-preencher a consulta oficial: não dá pra montar o link já preenchido pra
+       chave digitada na mão (o site da Sefaz depende de token de sessão, e o formato do QR exige
+       um hash que só o próprio QR carrega) — copiar pro clipboard é o substituto que garantidamente
+       funciona: na página do governo, é só encostar no campo e colar, em vez de redigitar 44
+       números. Falha em silêncio se o navegador negar a permissão (não é crítico pro fluxo). */
+    navigator.clipboard?.writeText(limpa).catch(() => {});
     setChaveDoQr({ chave: limpa, url: null });
     setDigitandoChave(false);
     setChaveDigitada("");
@@ -7092,7 +7388,16 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
       const duplicada = sessaoComMesmaNfe(sessoes, nfeLida.chave_acesso, sessao.id);
       if (duplicada) { setErroNfe("Essa nota já foi anexada numa outra compra do histórico."); return; }
       setErroNfe(null);
-      setNfeParaConferir(nfeLida);
+      /* Guarda o texto colado também, no mesmo formato que o PDF já usa (arquivo_base64 +
+         mime_type + nome_arquivo) — antes disso era o único dos 4 caminhos de leitura de nota
+         que processava e descartava, sem deixar nada salvo pra reconferir depois. */
+      const arquivoBase64 = "data:text/plain;charset=utf-8;base64," + btoa(unescape(encodeURIComponent(textoColado)));
+      const htmlReconstruido = montarHtmlRecibo({
+        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, dataEmissao: nfeLida.data_emissao,
+        valorTotal: nfeLida.valor_total, itens: nfeLida.itens, chaveAcesso: nfeLida.chave_acesso,
+        avisoOrigem: "Reconstruído a partir do texto colado da consulta oficial — não é o documento oficial.",
+      });
+      setNfeParaConferir({ ...nfeLida, arquivo_base64: arquivoBase64, mime_type: "text/plain", nome_arquivo: "nfce-consulta.txt", html_reconstruido: htmlReconstruido });
       setColandoTexto(false);
       setTextoColado("");
     } catch (err) { setErroNfe(err.message); }
@@ -7150,7 +7455,12 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
         r.onerror = reject;
         r.readAsDataURL(file);
       });
-      setNfeParaConferir({ ...nfeLida, arquivo_base64: arquivoBase64, mime_type: "application/pdf", nome_arquivo: file.name });
+      const htmlReconstruido = montarHtmlRecibo({
+        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, dataEmissao: nfeLida.data_emissao,
+        valorTotal: nfeLida.valor_total, itens: nfeLida.itens, chaveAcesso: nfeLida.chave_acesso,
+        avisoOrigem: "Reconstruído a partir do PDF da nota — não é o documento oficial.",
+      });
+      setNfeParaConferir({ ...nfeLida, arquivo_base64: arquivoBase64, mime_type: "application/pdf", nome_arquivo: file.name, html_reconstruido: htmlReconstruido });
     } catch (err) { setErroNfe(err.message); }
   }
   /* Compartilhamento nativo do Android: se chegou um arquivo pendente (PDF do DANFE, por
@@ -7176,7 +7486,14 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
             : it);
         }
       }
-      return { ...s, itens: itensAtualizados, nfe: { ...nfeConferida, conferida: true }, valor_nota_fiscal: nfeConferida.valor_total };
+      const ajustes = tentarExplicarDescontoClube(itensAtualizados, nfeConferida.valor_desconto, sessoes, catalogo, sessao.mercado_id);
+      if (ajustes) {
+        itensAtualizados = itensAtualizados.map((it) => {
+          const ajuste = ajustes.find((a) => a.itemId === it.id);
+          return ajuste ? { ...it, preco_pago: ajuste.precoNovo, subtotal: multiplicarValor(ajuste.precoNovo, it.quantidade || 1) } : it;
+        });
+      }
+      return { ...s, itens: itensAtualizados, nfe: { ...nfeConferida, conferida: true, desconto_clube_ajustes: ajustes }, valor_nota_fiscal: nfeConferida.valor_total };
     }));
     setNfeParaConferir(null);
   }
@@ -7192,11 +7509,25 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
           {comprados.map((it) => {
             const v = by(catalogo.variantes, it.produto_variante_id);
             const p = v && by(catalogo.produtos, v.produto_id);
-            return <div key={it.id} className="flex justify-between gap-2 text-xs font-mono2 mb-1"><span className="truncate">{p?.nome?.toUpperCase()}</span><span className="whitespace-nowrap">{brl(it.subtotal)}</span></div>;
+            const ajuste = sessao.nfe?.desconto_clube_ajustes?.find((a) => a.itemId === it.id);
+            return (
+              <div key={it.id} className="flex justify-between gap-2 text-xs font-mono2 mb-1">
+                <span className="truncate">{p?.nome?.toUpperCase()}</span>
+                <span className="whitespace-nowrap">
+                  {ajuste ? <><span className="line-through text-stone-400">{brl(ajuste.precoAntigo * ajuste.quantidade)}</span> <span className="text-emerald-700 font-semibold">{brl(it.subtotal)}</span></> : brl(it.subtotal)}
+                </span>
+              </div>
+            );
           })}
           <div className="border-t border-dashed border-stone-400 my-2" />
           <div className="flex justify-between font-mono2 font-bold"><span>TOTAL</span><span>{brl(total)}</span></div>
         </div>
+
+        {!!sessao.nfe?.desconto_clube_ajustes?.length && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 mb-4 text-xs text-emerald-800">
+            🎟️ <strong>Desconto de clube identificado</strong> — {sessao.nfe.desconto_clube_ajustes.length} item(ns) tiveram o preço corrigido pro valor real pago nessa compra.
+          </div>
+        )}
 
         <div className="bg-white border border-stone-200 rounded-xl p-3 mb-4">
           <div className="text-xs font-semibold text-stone-400 uppercase mb-2">Gasto por categoria</div>
@@ -7220,43 +7551,51 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
                 📎 Anexar PDF da nota agora
                 <input type="file" accept=".pdf,application/pdf" onChange={aoEscolherArquivo} className="hidden" />
               </label>
-              <button onClick={() => setLendoQr(true)} className="w-full flex items-center justify-center gap-2 border border-stone-300 rounded-xl py-2.5 text-sm text-stone-500 mt-2 tap-target">
-                📷 Ler QR Code da nota
-              </button>
-              {!digitandoChave ? (
-                <button onClick={() => setDigitandoChave(true)} className="text-xs text-stone-400 underline mt-1.5 tap-target">QR não lê? Digitar a chave de acesso manualmente</button>
-              ) : (
-                <div className="mt-1.5 flex gap-1.5">
-                  <input value={chaveDigitada} onChange={(e) => setChaveDigitada(e.target.value)} placeholder="os 44 números da chave (embaixo do QR)" className="flex-1 border border-stone-300 rounded-lg p-2 font-mono2 text-xs" aria-label="Chave de acesso da nota" />
-                  <button onClick={usarChaveDigitada} className="bg-emerald-700 text-white text-xs font-semibold px-3 rounded-lg tap-target shrink-0">Usar</button>
-                </div>
-              )}
               {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
-              {chaveDoQr && !colandoTexto && (
-                <div className="bg-stone-50 rounded-lg p-2.5 mt-2 text-xs">
-                  <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. Duas formas de trazer os dados: abre a consulta oficial, seleciona tudo (Ctrl+A) e copia — ou baixa o PDF pelo Meu Danfe.</div>
-                  <div className="flex flex-wrap gap-x-3 gap-y-1">
-                    <button onClick={() => window.open(montarUrlConsultaOficial(chaveDoQr), "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir consulta oficial →</button>
-                    <button onClick={() => setColandoTexto(true)} className="text-emerald-700 font-semibold underline tap-target">Já copiei, colar aqui →</button>
-                    <button onClick={() => window.open(montarUrlMeuDanfe(chaveDoQr.chave), "_blank")} className="text-stone-400 underline tap-target">Baixar PDF (Meu Danfe)</button>
-                  </div>
-                  <div className="flex items-center gap-2 mt-2 pt-2 border-t border-stone-200">
-                    <span className="font-mono2 text-[11px] text-stone-400 flex-1 truncate">{chaveDoQr.chave}</span>
-                    <button onClick={() => navigator.clipboard?.writeText(chaveDoQr.chave)} className="text-emerald-700 font-semibold shrink-0 tap-target">Copiar chave</button>
-                  </div>
+
+              {!maisOpcoesNfe ? (
+                <button onClick={() => setMaisOpcoesNfe(true)} className="text-xs text-stone-400 underline mt-2 block mx-auto tap-target">Não tenho o PDF agora →</button>
+              ) : (
+                <div className="mt-3 pt-3 border-t border-stone-200 border-dashed">
+                  <button onClick={() => setLendoQr(true)} className="w-full flex items-center justify-center gap-2 border border-stone-300 rounded-xl py-2.5 text-sm text-stone-500 tap-target">
+                    📷 Ler QR Code da nota
+                  </button>
+                  {!digitandoChave ? (
+                    <button onClick={() => setDigitandoChave(true)} className="text-xs text-stone-400 underline mt-1.5 tap-target">QR não lê? Digitar a chave de acesso manualmente</button>
+                  ) : (
+                    <div className="mt-1.5 flex gap-1.5">
+                      <input value={chaveDigitada} onChange={(e) => setChaveDigitada(e.target.value)} placeholder="os 44 números da chave (embaixo do QR)" className="flex-1 border border-stone-300 rounded-lg p-2 font-mono2 text-xs" aria-label="Chave de acesso da nota" />
+                      <button onClick={usarChaveDigitada} className="bg-emerald-700 text-white text-xs font-semibold px-3 rounded-lg tap-target shrink-0">Usar</button>
+                    </div>
+                  )}
+                  {chaveDoQr && !colandoTexto && (
+                    <div className="bg-stone-50 rounded-lg p-2.5 mt-2 text-xs">
+                      <div className="text-stone-500 mb-1.5">Chave identificada: ...{chaveDoQr.chave.slice(-8)}. Duas formas de trazer os dados: abre a consulta oficial, seleciona tudo (Ctrl+A) e copia — ou baixa o PDF pelo Meu Danfe.
+                        {!chaveDoQr.url && " Já copiei a chave — é só colar no campo \"Chave de acesso\" da página."}</div>
+                      <div className="flex flex-wrap gap-x-3 gap-y-1">
+                        <button onClick={() => window.open(montarUrlConsultaOficial(chaveDoQr), "_blank")} className="text-emerald-700 font-semibold underline tap-target">Abrir consulta oficial →</button>
+                        <button onClick={() => setColandoTexto(true)} className="text-emerald-700 font-semibold underline tap-target">Já copiei, colar aqui →</button>
+                        <button onClick={() => window.open(montarUrlMeuDanfe(chaveDoQr.chave), "_blank")} className="text-stone-400 underline tap-target">Baixar PDF (Meu Danfe)</button>
+                      </div>
+                      <div className="flex items-center gap-2 mt-2 pt-2 border-t border-stone-200">
+                        <span className="font-mono2 text-[11px] text-stone-400 flex-1 truncate">{chaveDoQr.chave}</span>
+                        <button onClick={() => navigator.clipboard?.writeText(chaveDoQr.chave)} className="text-emerald-700 font-semibold shrink-0 tap-target">Copiar chave</button>
+                      </div>
+                    </div>
+                  )}
+                  {colandoTexto && (
+                    <div className="bg-stone-50 rounded-lg p-2.5 mt-2">
+                      <p className="text-xs text-stone-500 mb-2">Cola aqui o texto inteiro que você copiou da página (do nome do mercado até a chave de acesso).</p>
+                      <textarea value={textoColado} onChange={(e) => setTextoColado(e.target.value)} rows={4} placeholder="Cola aqui (Ctrl+V)..." className="w-full border border-stone-300 rounded-lg p-2 text-xs font-mono2" aria-label="Texto colado da consulta da nota" />
+                      <div className="flex gap-2 mt-2">
+                        <button onClick={() => { setColandoTexto(false); setTextoColado(""); }} className="flex-1 py-2 rounded-lg border border-stone-300 text-stone-600 text-xs font-semibold tap-target">Cancelar</button>
+                        <button onClick={processarTextoColado} disabled={!textoColado.trim()} className="flex-1 py-2 rounded-lg bg-emerald-700 text-white text-xs font-semibold tap-target disabled:opacity-40">Ler itens</button>
+                      </div>
+                    </div>
+                  )}
+                  <p className="text-xs text-stone-400 mt-2">Sem QR nem XML? <button onClick={() => setLendoOcr(true)} className="text-emerald-700 font-semibold underline tap-target">Ler o total por foto</button>.</p>
                 </div>
               )}
-              {colandoTexto && (
-                <div className="bg-stone-50 rounded-lg p-2.5 mt-2">
-                  <p className="text-xs text-stone-500 mb-2">Cola aqui o texto inteiro que você copiou da página (do nome do mercado até a chave de acesso).</p>
-                  <textarea value={textoColado} onChange={(e) => setTextoColado(e.target.value)} rows={4} placeholder="Cola aqui (Ctrl+V)..." className="w-full border border-stone-300 rounded-lg p-2 text-xs font-mono2" aria-label="Texto colado da consulta da nota" />
-                  <div className="flex gap-2 mt-2">
-                    <button onClick={() => { setColandoTexto(false); setTextoColado(""); }} className="flex-1 py-2 rounded-lg border border-stone-300 text-stone-600 text-xs font-semibold tap-target">Cancelar</button>
-                    <button onClick={processarTextoColado} disabled={!textoColado.trim()} className="flex-1 py-2 rounded-lg bg-emerald-700 text-white text-xs font-semibold tap-target disabled:opacity-40">Ler itens</button>
-                  </div>
-                </div>
-              )}
-              <p className="text-xs text-stone-400 mt-2">Sem QR nem XML? <button onClick={() => setLendoOcr(true)} className="text-emerald-700 font-semibold underline tap-target">Ler o total por foto</button>.</p>
             </>
           )}
         </div>
@@ -7282,9 +7621,9 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
       )}
       {lendoOcr && (
         <ModalLerCupomOcr
-          onValorLido={({ valor, arquivoBase64, mimeType }) => {
+          onValorLido={({ valor, arquivoBase64, mimeType, htmlReconstruido }) => {
             setSessoes((ss) => ss.map((s) => (s.id === sessao.id
-              ? { ...s, valor_nota_fiscal: valor, nfe: { chave_acesso: null, cnpj_emit: null, nome_emit: null, data_emissao: null, valor_total: valor, itens: [], arquivo_base64: arquivoBase64, mime_type: mimeType, nome_arquivo: "cupom-foto.jpg", conferida: true } }
+              ? { ...s, valor_nota_fiscal: valor, nfe: { chave_acesso: null, cnpj_emit: null, nome_emit: null, data_emissao: null, valor_total: valor, itens: [], arquivo_base64: arquivoBase64, mime_type: mimeType, nome_arquivo: "cupom-foto.jpg", conferida: true, html_reconstruido: htmlReconstruido } }
               : s)));
             setLendoOcr(false);
           }}
@@ -7319,7 +7658,7 @@ function TelaHistorico({ catalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAu
 
   const porMes = {}, porMercado = {}, porCategoria = {};
   for (const s of fechadas) {
-    const valor = s.valor_nota_fiscal ?? s.itens.reduce((a, it) => a + (it.subtotal || 0), 0);
+    const valor = s.valor_nota_fiscal ?? somarValores(...s.itens.map((it) => it.subtotal || 0));
     porMes[mesAno(s.data_hora)] = (porMes[mesAno(s.data_hora)] || 0) + valor;
     porMercado[s.mercado_id] = (porMercado[s.mercado_id] || 0) + valor;
     for (const it of s.itens) {
@@ -7371,7 +7710,7 @@ function TelaHistorico({ catalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAu
           </div>
 
           <div className="space-y-2">
-            {listaFiltrada.map((s) => { const m = by(catalogo.mercados, s.mercado_id); const valor = s.valor_nota_fiscal ?? s.itens.reduce((a, it) => a + (it.subtotal || 0), 0); return (
+            {listaFiltrada.map((s) => { const m = by(catalogo.mercados, s.mercado_id); const valor = s.valor_nota_fiscal ?? somarValores(...s.itens.map((it) => it.subtotal || 0)); return (
               <button key={s.id} onClick={() => setDetalheId(s.id)} className="w-full bg-white border border-stone-200 rounded-xl p-3 flex items-center justify-between text-left tap-target">
                 <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: m?.cor }} /><div><div className="font-semibold text-sm text-stone-700">{m?.nome}</div><div className="text-xs text-stone-400">{dataCurta(s.data_hora)}</div></div></div>
                 <span className="font-mono2 font-semibold">{brl(valor)}</span>
@@ -7416,7 +7755,7 @@ function TelaHistorico({ catalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAu
 /* =========================================================
    TELA: CONFIGURAÇÕES
 ========================================================= */
-function TelaConfig({ catalogo, setCatalogo, sessoes, setSessoes, setPrecoIaCache, apiKey, setApiKey }) {
+function TelaConfig({ catalogo, setCatalogo, sessoes, setSessoes, setPrecoIaCache, apiKey, setApiKey, onAbrirConfigGeral }) {
   const [apiKeyTexto, setApiKeyTexto] = useState(apiKey || "");
   const [confirmar, setConfirmar] = useState(null);
 
@@ -7449,7 +7788,13 @@ function TelaConfig({ catalogo, setCatalogo, sessoes, setSessoes, setPrecoIaCach
   return (
     <div className="h-full overflow-y-auto p-4 pb-6 space-y-4">
       <h2 className="text-2xl font-bold text-emerald-900">Config — Mercado</h2>
-      <p className="text-xs text-stone-400 -mt-3">Backup, versão do app e outras coisas de todo o Nossa Casa ficam em ⚙️ Configurações, na tela inicial.</p>
+
+      {onAbrirConfigGeral && (
+        <button onClick={onAbrirConfigGeral} className="w-full flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 tap-target">
+          <span className="text-sm text-emerald-800 text-left"><b>💾 Backup completo</b> (protege seu histórico de verdade) fica nas Configurações gerais</span>
+          <span className="text-emerald-700 text-lg shrink-0 ml-2">→</span>
+        </button>
+      )}
 
       <div className="bg-white border border-stone-200 rounded-xl p-4">
         <div className="font-semibold text-stone-700 mb-1">Chave de API da Anthropic (opcional)</div>
@@ -7461,7 +7806,7 @@ function TelaConfig({ catalogo, setCatalogo, sessoes, setSessoes, setPrecoIaCach
 
       <div className="bg-white border border-stone-200 rounded-xl p-4">
         <div className="font-semibold text-stone-700 mb-1">Catálogo</div>
-        <p className="text-xs text-stone-500 mb-3">Só os mercados/produtos/marcas cadastrados (sem histórico de compras) — útil pra levar o catálogo pra outro Nossa Casa sem levar junto suas compras.</p>
+        <p className="text-xs text-stone-500 mb-3">Só os mercados/produtos/marcas cadastrados — <b>não leva o histórico de compras</b>. Isso não é backup; pra isso, use "Backup completo" acima. Isso aqui serve só pra levar o catálogo pra outro Nossa Casa.</p>
         <div className="grid grid-cols-2 gap-2 mb-2">
           <button onClick={() => exportarCatalogo(false)} className="w-full flex items-center justify-center gap-1.5 border border-stone-300 rounded-lg py-2.5 text-xs font-semibold text-stone-500 tap-target">⬇️ Baixar catálogo</button>
           <label className="flex items-center justify-center gap-1.5 border border-stone-300 rounded-lg py-2.5 text-xs font-semibold text-stone-500 cursor-pointer tap-target">⬆️ Importar catálogo<input type="file" accept="application/json" onChange={importarCatalogo} className="hidden" /></label>
@@ -7522,7 +7867,7 @@ function loadAllMercado() {
    Recebe apiKey/setApiKey de fora (agora é estado do app-shell, compartilhado entre módulos)
    e onVoltarHub pra voltar pro Hub. Todo o resto (catálogo, sessões, cache de IA, abas internas,
    modo correção) continua exatamente como era. */
-function AppMercado({ apiKey, setApiKey, onVoltarHub, arquivoCompartilhado, onUsarArquivoCompartilhado, sessaoParaEditarExterno, onAbriuSessaoExterna }) {
+function AppMercado({ apiKey, setApiKey, onVoltarHub, onAbrirConfigGeral, arquivoCompartilhado, onUsarArquivoCompartilhado, sessaoParaEditarExterno, onAbriuSessaoExterna }) {
   const [loading, setLoading] = useState(true);
   const [catalogo, setCatalogo] = useState(null);
   const [sessoes, setSessoes] = useState([]);
@@ -7608,7 +7953,7 @@ function AppMercado({ apiKey, setApiKey, onVoltarHub, arquivoCompartilhado, onUs
         {aba === "mercados" && <TelaMercados catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} />}
         {aba === "produtos" && <TelaProdutos catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} />}
         {aba === "historico" && <TelaHistorico catalogo={catalogo} sessoes={sessoes} setSessoes={setSessoes} abrirSessaoId={sessaoParaAbrir} onAbriuAutomatico={() => setSessaoParaAbrir(null)} onReabriuParaCorrecao={() => setAba("lista")} />}
-        {aba === "config" && <TelaConfig catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} setApiKey={setApiKey} />}
+        {aba === "config" && <TelaConfig catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} setApiKey={setApiKey} onAbrirConfigGeral={onAbrirConfigGeral} />}
       </div>
       <TabBarInterna aba={aba} setAba={mudarAba} temSessaoAtiva={temSessaoAtiva} restrito={emModoCorrecao} />
     </div>

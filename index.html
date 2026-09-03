@@ -93,7 +93,7 @@
 </script>
 
 <script>
-  window.VERSAO_APP = "2026.09.03-7"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
+  window.VERSAO_APP = "2026.09.05-3"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
 </script>
 
 <script>
@@ -194,6 +194,26 @@ const parsePrecoInteligente = (txt) => {
   return parseInt(reais, 10) + parseInt(centavos, 10) / 100;
 };
 const formatarValorCampo = (v) => (v == null ? "" : v.toFixed(2).replace(".", ","));
+/* Etapa sobre "peso inteligente" — mesmo espírito do parsePrecoInteligente, mas com regra
+   diferente: pra quantidade fracionável (kg, L), a vírgula entra logo depois do PRIMEIRO dígito
+   digitado, não nos últimos 2 como o dinheiro. Reproduz exatamente como uma balança de mercado
+   mostra o peso (balança mostra "0,875", a pessoa digita "0875" sem vírgula, bate exato). Com
+   vírgula/ponto, valor literal, sem ajuste — mesma válvula de escape do dinheiro. "un" nunca
+   passa por essa regra (unidade sempre é número inteiro). */
+const parseQuantidadeInteligente = (txt, fracionavel) => {
+  if (txt == null) return null;
+  const t = String(txt).trim();
+  if (t === "") return null;
+  if (!fracionavel) { const n = parseInt(t.replace(/\D/g, ""), 10); return isNaN(n) ? null : n; }
+  if (t.includes(",") || t.includes(".")) {
+    const v = parseFloat(t.replace(",", "."));
+    return isNaN(v) ? null : v;
+  }
+  const digitos = t.replace(/\D/g, "");
+  if (!digitos) return null;
+  if (digitos.length === 1) return parseInt(digitos, 10);
+  return parseFloat(`${digitos.slice(0, 1)}.${digitos.slice(1)}`);
+};
 /* Bug 22.5.2: filtra o que é digitado nos campos de preço pra só aceitar dígito/vírgula/ponto */
 const sanitizarEntradaPreco = (txt) => (txt || "").replace(/[^0-9,.]/g, "");
 
@@ -221,6 +241,20 @@ function dataParaArquivo() {
 }
 function normalizar(txt) {
   return (txt || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+}
+/* Etapa sobre simplificar: seção 9.7 do mapa original, nunca implementada até agora — sem isso,
+   o catálogo acumula "Achocolatado em Pó" duas vezes (achado real, seção do mapa sobre "Comprados
+   com frequência" mostrando duplicata) e cada cópia vira uma série de histórico separada, sem
+   necessidade. Só compara IGUALDADE exata depois de normalizar (minúsculo, sem acento, sem
+   espaço duplo) — nunca parecença aproximada, que arriscaria travar nome de produto genuinamente
+   diferente (ex: "Leite Integral" x "Leite Desnatado" não devem disparar aviso nenhum). */
+function normalizarParaComparar(txt) {
+  return normalizar(txt).replace(/\s+/g, " ");
+}
+function achaNomeParecido(nome, lista, idParaIgnorar) {
+  const alvo = normalizarParaComparar(nome);
+  if (!alvo) return null;
+  return lista.find((item) => item.id !== idParaIgnorar && normalizarParaComparar(item.nome) === alvo) || null;
 }
 function resizeImage(file, maxWidth = 480, quality = 0.72) {
   return new Promise((resolve, reject) => {
@@ -253,7 +287,7 @@ function resizeImage(file, maxWidth = 480, quality = 0.72) {
 function escaparHtml(s) {
   return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
-function montarHtmlRecibo({ nomeEmit, cnpj, dataEmissao, valorTotal, itens, formaPagamento, chaveAcesso, avisoOrigem }) {
+function montarHtmlRecibo({ nomeEmit, cnpj, endereco, dataEmissao, valorTotal, valorDesconto, itens, formaPagamento, numeroNota, serieNota, protocolo, tributos, chaveAcesso, avisoOrigem }) {
   const estilo = `
     body { font-family: 'Courier New', monospace; background: #f2ece0; margin: 0; padding: 28px 14px; color: #292524; }
     .ticket { max-width: 420px; margin: 0 auto; background: #fffdf8; border: 1px dashed #b8ab8f; border-radius: 6px; padding: 22px 20px; }
@@ -263,6 +297,9 @@ function montarHtmlRecibo({ nomeEmit, cnpj, dataEmissao, valorTotal, itens, form
     .linha .nome { flex: 1; }
     hr { border: none; border-top: 1px dashed #b8ab8f; margin: 12px 0; }
     .total { display: flex; justify-content: space-between; font-weight: bold; font-size: 17px; margin-top: 2px; }
+    .desconto { display: flex; justify-content: space-between; font-size: 12px; color: #b45309; padding: 2px 0; }
+    .secao { font-size: 10.5px; color: #78716c; margin-top: 10px; }
+    .secao b { color: #57534e; }
     .rodape { text-align: center; font-size: 10px; color: #a8a29e; margin-top: 14px; word-break: break-all; }
     .aviso { text-align: center; font-size: 10.5px; color: #92400e; background: #fef3c7; border-radius: 8px; padding: 8px 10px; margin-top: 14px; }
     .original { display: block; text-align: center; font-size: 12px; margin-top: 14px; color: #047857; text-decoration: underline; }
@@ -270,15 +307,29 @@ function montarHtmlRecibo({ nomeEmit, cnpj, dataEmissao, valorTotal, itens, form
   const linhasItens = (itens || []).map((it) => `
     <div class="linha"><span class="nome">${escaparHtml(it.descricao)}${it.quantidade && it.quantidade !== 1 ? ` (${it.quantidade}x)` : ""}</span><span>${brl(it.valor_total)}</span></div>
   `).join("");
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escaparHtml(nomeEmit || "Recibo")}</title><style>${estilo}</style></head>
+  const linhasPagamento = (formaPagamento || []).map((f) => `
+    <div class="linha"><span class="nome">${escaparHtml(f.nome)}</span><span>${brl(f.valor)}</span></div>
+  `).join("");
+  const temTributos = tributos && (tributos.fcp != null || tributos.fcpst != null || tributos.federal != null);
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escaparHtml(nomeEmit || "Recibo")}</title><style>${estilo}</style></head>
 <body><div class="ticket">
   <div class="emit">${escaparHtml(nomeEmit || "Estabelecimento não identificado")}</div>
   ${cnpj ? `<div class="sub">${escaparHtml(cnpj)}</div>` : ""}
+  ${endereco ? `<div class="sub">${escaparHtml(endereco)}</div>` : ""}
   ${dataEmissao ? `<div class="sub">${escaparHtml(dataEmissao)}</div>` : ""}
   <hr>
   ${itens && itens.length ? linhasItens + "<hr>" : ""}
+  ${valorDesconto ? `<div class="desconto"><span>Descontos</span><span>-${brl(valorDesconto)}</span></div>` : ""}
   <div class="total"><span>TOTAL</span><span>${brl(valorTotal)}</span></div>
-  ${formaPagamento ? `<div class="sub" style="margin-top:8px;">${escaparHtml(formaPagamento)}</div>` : ""}
+  ${linhasPagamento ? `<div class="secao"><b>Forma de pagamento</b></div>${linhasPagamento}` : ""}
+  ${(numeroNota || protocolo) ? `<div class="secao">
+    ${numeroNota ? `Número: ${escaparHtml(numeroNota)}${serieNota ? ` · Série: ${escaparHtml(serieNota)}` : ""}<br>` : ""}
+    ${protocolo ? `Protocolo de autorização: ${escaparHtml(protocolo)}` : ""}
+  </div>` : ""}
+  ${temTributos ? `<div class="secao"><b>Tributos aproximados (Lei 12.741/2012)</b><br>
+    ${tributos.federal != null ? `Federal: ${brl(tributos.federal)} · ` : ""}${tributos.estadual != null ? `Estadual: ${brl(tributos.estadual)} · ` : ""}${tributos.municipal != null ? `Municipal: ${brl(tributos.municipal)}` : ""}
+    ${tributos.fcp != null ? `${tributos.federal != null ? "<br>" : ""}FCP: ${brl(tributos.fcp)}${tributos.fcpst != null ? ` · FCPST: ${brl(tributos.fcpst)}` : ""}` : ""}
+  </div>` : ""}
   ${chaveAcesso ? `<div class="rodape">Chave: ${escaparHtml(chaveAcesso)}</div>` : ""}
   <div class="aviso">${escaparHtml(avisoOrigem || "Reconstruído a partir do documento original — não é o documento oficial.")}</div>
   <a href="#" id="linkOriginal" class="original">Ver arquivo original</a>
@@ -687,7 +738,7 @@ function ModalDefinirPin({ modo, pinAtual, onSalvar, onRemover, onFechar }) {
   );
 }
 
-function ModalConfirmar({ titulo, mensagem, textoConfirmar = "Confirmar", severo = false, onConfirmar, onCancelar }) {
+function ModalConfirmar({ titulo, mensagem, textoConfirmar = "Confirmar", textoCancelar = "Cancelar", severo = false, onConfirmar, onCancelar }) {
   useFecharComVoltar(true, onCancelar);
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[70] p-4" onClick={onCancelar}>
@@ -695,7 +746,7 @@ function ModalConfirmar({ titulo, mensagem, textoConfirmar = "Confirmar", severo
         <h3 className={`text-lg font-bold mb-2 ${severo ? "text-red-600" : "text-stone-800"}`}>{severo ? "⚠️ " : ""}{titulo}</h3>
         <p className="text-sm text-stone-600 mb-5">{mensagem}</p>
         <div className="flex gap-2">
-          <button onClick={onCancelar} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
+          <button onClick={onCancelar} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">{textoCancelar}</button>
           <button onClick={onConfirmar} className={`flex-1 py-2.5 rounded-lg font-semibold text-white tap-target ${severo ? "bg-red-600" : "bg-emerald-700"}`}>{textoConfirmar}</button>
         </div>
       </div>
@@ -1037,8 +1088,8 @@ function App() {
   return <>{avisoCompartilhado}<Hub onEntrar={setAbaPrincipal} /></>;
 }
 </script>
-<script type="text/babel" data-presets="react,env" src="./mercado.js?v=2026.09.03-7"></script>
-<script type="text/babel" data-presets="react,env" src="./financas.js?v=2026.09.03-7"></script>
+<script type="text/babel" data-presets="react,env" src="./mercado.js?v=2026.09.05-3"></script>
+<script type="text/babel" data-presets="react,env" src="./financas.js?v=2026.09.05-3"></script>
 <script type="text/babel" data-presets="react,env">
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>

@@ -302,8 +302,16 @@ function sessaoComMesmaNfe(sessoes, chaveAcesso, ignorarSessaoId) {
    Ressalva: só testei contra esse PDF específico (RJ) — outras fontes ou estados podem ter
    layout diferente; o parser é tolerante (cai pra soma dos itens se não achar o padrão de
    totais esperado) mas pode precisar de ajuste se aparecer um formato muito diferente. */
+/* Etapa sobre "quero TODAS as informações da original" — reescrita completa, testada ponta a
+   ponta contra um PDF real ("Consulta_DF-e.PDF", export direto da página oficial de consulta,
+   não do Meu Danfe). Achado importante nesse teste: o formato de item nesse tipo de PDF é
+   diferente do texto colado — "Vl. Total" gruda na linha do NOME do item (não na linha do valor),
+   porque assim que a tabela é desenhada visualmente, e itensPdfEmLinhas (que já reconstrói a
+   ordem de leitura corretamente) preserva esse agrupamento por linha visual. Testei simulando de
+   verdade o pipeline completo (extração de posição + itensPdfEmLinhas) contra o PDF real antes
+   de escrever esse regex — bateu os 7 itens exatos, com a soma batendo com "Valor total" da nota. */
 function parsearDanfePdf(texto) {
-  const regexItem = /([A-ZÀ-Ú][A-ZÀ-Ú0-9.,\/\s]*?)\s*\(C.{0,3}digo:\s*(\d+)\s*\)\s*Qtde\.:\s*([\d,]+)\s*UN:\s*(\w+)\s*Vl\.\s*Unit\.:\s*([\d,]+)\s*Vl\.\s*Total\s*([\d,]+)/g;
+  const regexItem = /(.+?)\s*\(C.{0,3}digo:\s*(\d+)\s*\)\s*Vl\.\s*Total\s*\nQtde\.:\s*([\d,]+)\s*UN:\s*(\S+)\s*Vl\.\s*Unit\.:\s*([\d,]+)\s*([\d,]+)/g;
   const itens = [];
   let m;
   while ((m = regexItem.exec(texto)) !== null) {
@@ -313,25 +321,52 @@ function parsearDanfePdf(texto) {
   if (!itens.length) throw new Error("Não consegui achar os itens nesse PDF — pode ser um formato diferente do que já testei. Anexa mesmo assim como referência e digita os itens à mão, ou me manda esse PDF pra eu ajustar a leitura.");
 
   const somaItens = itens.reduce((a, it) => a + (it.valor_total || 0), 0);
-  let valorTotal = somaItens;
-  const cluster = texto.match(/Consulta:.*?(\d+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+Valor pago/);
-  if (cluster) valorTotal = numDe(cluster[4]);
+  const valorPagarMatch = texto.match(/Valor a pagar R\$:\s*([\d,]+)/);
+  const valorTotal = valorPagarMatch ? numDe(valorPagarMatch[1]) : somaItens;
 
   const chaveAcesso = extrairChaveDoTextoPlano(texto);
   if (!chaveAcesso) throw new Error("Achei os itens, mas não consegui achar a chave de acesso nesse PDF.");
 
   const nomeMatch = texto.match(/([A-ZÀ-Ú][A-ZÀ-Ú\s]{5,60}?)\s+CNPJ:/);
   const cnpjMatch = texto.match(/CNPJ:\s*([\d.\/-]+)/);
-  /* Etapa sobre desconto de clube: mesmo padrão de rótulo já confirmado no texto colado da
-     consulta oficial ("Descontos R$:X,XX") — aqui é best-effort, ainda não testado contra um
-     PDF real com desconto, mas falha em silêncio (fica null) se o formato for diferente, sem
-     quebrar a leitura do resto da nota. */
   const descontoMatch = texto.match(/Descontos?\s*R\$:?\s*([\d,]+)/i);
-  /* Testado contra as 2 notas reais já usadas nessa conversa — bateu certo nas duas. */
   const dataMatch = texto.match(/Emiss[ãa]o:\s*(\d{2})\/(\d{2})\/(\d{4})/);
   const dataEmissao = dataMatch ? `${dataMatch[3]}-${dataMatch[2]}-${dataMatch[1]}` : null;
 
-  return { chave_acesso: chaveAcesso, cnpj_emit: cnpjMatch ? cnpjMatch[1] : null, nome_emit: nomeMatch ? nomeMatch[1].trim() : null, data_emissao: dataEmissao, valor_total: valorTotal, valor_desconto: descontoMatch ? numDe(descontoMatch[1]) : null, itens };
+  let endereco = null;
+  const cnpjIdx = texto.search(/CNPJ:\s*[\d.\/-]+/);
+  if (cnpjIdx >= 0) {
+    const candidata = texto.slice(cnpjIdx).split("\n").slice(1).find((l) => l.trim() && !/^Filtrar itens/i.test(l.trim()));
+    if (candidata && !/Código:|Qtde\./.test(candidata)) endereco = candidata.trim();
+  }
+  const numSerieMatch = texto.match(/Número:\s*(\d+)\s*Série:\s*(\d+)/);
+  const protocoloMatch = texto.match(/Protocolo de Autorização:\s*(\d+)/);
+  /* Diferença encontrada testando contra o PDF real: aqui tem um espaço entre "pagamento:" e
+     "Valor pago R$:" (o texto colado da consulta oficial não tem esse espaço) — regex aceita
+     os dois formatos. */
+  const blocoPgtoMatch = texto.match(/Forma de pagamento:\s*Valor pago R\$:\s*\n([\s\S]*?)(?:\n\s*\n|EMISSÃO|Informa)/);
+  const formaPagamento = [];
+  if (blocoPgtoMatch) {
+    for (const linha of blocoPgtoMatch[1].split("\n")) {
+      const lm = linha.match(/^(.+?)\s*([\d.]*\d,\d{2})$/);
+      if (lm) formaPagamento.push({ nome: lm[1].trim(), valor: numDe(lm[2]) });
+    }
+  }
+  const fcpMatch = texto.match(/Total do FCP:\s*R\$\s*([\d.,]+)/i);
+  const fcpstMatch = texto.match(/Total do FCPST:\s*R\$\s*([\d.,]+)/i);
+  const tribAproxMatch = texto.match(/Federal\s*R\$\s*([\d.,]+).*?Estadual\s*R\$\s*([\d.,]+).*?Municipal\s*R\$\s*([\d.,]+)/is);
+
+  return {
+    chave_acesso: chaveAcesso, cnpj_emit: cnpjMatch ? cnpjMatch[1] : null, nome_emit: nomeMatch ? nomeMatch[1].trim() : null,
+    endereco, data_emissao: dataEmissao, valor_total: valorTotal, valor_desconto: descontoMatch ? numDe(descontoMatch[1]) : null,
+    numero_nota: numSerieMatch ? numSerieMatch[1] : null, serie_nota: numSerieMatch ? numSerieMatch[2] : null,
+    protocolo_autorizacao: protocoloMatch ? protocoloMatch[1] : null, forma_pagamento: formaPagamento,
+    tributos: {
+      fcp: fcpMatch ? numDe(fcpMatch[1]) : null, fcpst: fcpstMatch ? numDe(fcpstMatch[1]) : null,
+      federal: tribAproxMatch ? numDe(tribAproxMatch[1]) : null, estadual: tribAproxMatch ? numDe(tribAproxMatch[2]) : null, municipal: tribAproxMatch ? numDe(tribAproxMatch[3]) : null,
+    },
+    itens,
+  };
 }
 function extrairChaveDoQrNfce(conteudoQr) {
   const porParametro = conteudoQr.match(/[?&]p=(\d{44})/);
@@ -348,11 +383,9 @@ function extrairChaveDoTextoPlano(texto) {
   const comGrupos = texto.match(/(\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\s+\d{4})/);
   return comGrupos ? comGrupos[1].replace(/\s+/g, "") : null;
 }
-/* PDF de DANFE (a versão "visual" da nota, é o que normalmente se baixa de sites tipo Meu Danfe)
-   não tem a estrutura do XML — não dá pra extrair item por item com confiança sem ter testado
-   contra um exemplo real. Por segurança, só extrai o valor total (texto embutido no PDF, mais
-   confiável que OCR de foto) e a chave, pro mesmo fluxo simples que já existe pra "ler total por
-   foto" — o de itens continua exigindo o XML de verdade. */
+/* Extrai o texto do PDF já na ordem de leitura certa (itensPdfEmLinhas resolve o problema de
+   ordem embaralhada — seção 23 do mapa), pra parsearDanfePdf conseguir ler item por item e
+   todos os campos da nota, não só o valor total. */
 async function extrairTextoDePdf(arrayBuffer) {
   const pdfjsLib = await carregarPdfJs();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -466,7 +499,45 @@ function parsearTextoConsultaNFCe(texto) {
   const dataMatch = texto.match(/Emiss[ãa]o:\s*(\d{2})\/(\d{2})\/(\d{4})/);
   const dataEmissao = dataMatch ? `${dataMatch[3]}-${dataMatch[2]}-${dataMatch[1]}` : null;
 
-  return { chave_acesso: chaveAcesso, cnpj_emit: cnpjMatch ? cnpjMatch[1] : null, nome_emit: nomeMatch ? nomeMatch[1].trim() : null, data_emissao: dataEmissao, valor_total: valorTotal, valor_desconto: descontoMatch ? numDe(descontoMatch[1]) : null, itens };
+  /* Etapa sobre "quero TODAS as informações da original" — testado ponta a ponta contra o texto
+     real da nota do Tere Hortifruti (com desconto e pagamento dividido em 2 formas). */
+  let endereco = null;
+  const cnpjIdx = texto.search(/CNPJ:\s*[\d.\/-]+/);
+  if (cnpjIdx >= 0) {
+    const candidata = texto.slice(cnpjIdx).split("\n").slice(1).find((l) => l.trim() && !/^Filtrar itens/i.test(l.trim()));
+    if (candidata && !/Código:|Qtde\./.test(candidata)) endereco = candidata.trim();
+  }
+  const numSerieMatch = texto.match(/Número:\s*(\d+)\s*Série:\s*(\d+)/);
+  const protocoloMatch = texto.match(/Protocolo de Autorização:\s*(\d+)/);
+  /* Pagamento pode vir dividido em várias formas (ex: parte cartão, parte PIX) — cada linha é
+     "NOME DA FORMAVALOR", às vezes sem espaço entre o nome e o valor, às vezes com — o regex
+     aceita os dois formatos (testado contra as 2 notas reais já usadas nessa conversa). */
+  const blocoPgtoMatch = texto.match(/Forma de pagamento:Valor pago R\$:\s*\n([\s\S]*?)(?:\n\s*\n|EMISSÃO)/);
+  const formaPagamento = [];
+  if (blocoPgtoMatch) {
+    for (const linha of blocoPgtoMatch[1].split("\n")) {
+      const lm = linha.match(/^(.+?)\s*([\d.]*\d,\d{2})$/);
+      if (lm) formaPagamento.push({ nome: lm[1].trim(), valor: numDe(lm[2]) });
+    }
+  }
+  const fcpMatch = texto.match(/Total do FCP:\s*R\$\s*([\d.,]+)/i);
+  const fcpstMatch = texto.match(/Total do FCPST:\s*R\$\s*([\d.,]+)/i);
+  /* Nem toda nota mostra a quebra Federal/Estadual/Municipal (a do Tere não mostra, só FCP/FCPST)
+     — quando existir, captura; quando não, fica null sem quebrar nada (mesmo espírito do
+     valor_desconto: melhor-esforço, falha em silêncio). */
+  const tribAproxMatch = texto.match(/Federal\s*R\$\s*([\d.,]+).*?Estadual\s*R\$\s*([\d.,]+).*?Municipal\s*R\$\s*([\d.,]+)/is);
+
+  return {
+    chave_acesso: chaveAcesso, cnpj_emit: cnpjMatch ? cnpjMatch[1] : null, nome_emit: nomeMatch ? nomeMatch[1].trim() : null,
+    endereco, data_emissao: dataEmissao, valor_total: valorTotal, valor_desconto: descontoMatch ? numDe(descontoMatch[1]) : null,
+    numero_nota: numSerieMatch ? numSerieMatch[1] : null, serie_nota: numSerieMatch ? numSerieMatch[2] : null,
+    protocolo_autorizacao: protocoloMatch ? protocoloMatch[1] : null, forma_pagamento: formaPagamento,
+    tributos: {
+      fcp: fcpMatch ? numDe(fcpMatch[1]) : null, fcpst: fcpstMatch ? numDe(fcpstMatch[1]) : null,
+      federal: tribAproxMatch ? numDe(tribAproxMatch[1]) : null, estadual: tribAproxMatch ? numDe(tribAproxMatch[2]) : null, municipal: tribAproxMatch ? numDe(tribAproxMatch[3]) : null,
+    },
+    itens,
+  };
 }
 /* Reserva pro scanner (seção 30): Safari/iOS não tem BarcodeDetector nativo — nenhum navegador
    no iPhone tem, é regra da Apple todo navegador ali usar o motor do Safari por baixo. A ZXing
@@ -4898,6 +4969,43 @@ function GraficoComparacaoTamanhos({ series, unidadeBase, largura = 300, altura 
    que usam esse componente (FormVariante e o formulário rápido dentro da lista), sem duplicar
    lógica. Quem CRIA de verdade é sempre quem chama o componente (via onCriarNovo) — SeletorBusca
    só sabe mostrar o botão e fechar depois, não sabe editar catálogo. */
+/* Etapa sobre redesenhar o seletor de unidade: antes eram 3 chips sempre visíveis (kg/l/un)
+   competindo por atenção do lado da quantidade. Agora a unidade fica embutida no próprio campo
+   de quantidade, e mudar é uma ação deliberada — abre isso aqui, pergunta pra qual unidade e,
+   escolhida, pergunta se quer salvar como padrão do produto (não só pra essa compra), pra não
+   precisar corrigir de novo na próxima vez que comprar o mesmo item. */
+function ModalMudarUnidade({ unidadeAtual, nomeProduto, onEscolher, onFechar }) {
+  const [novaUnidade, setNovaUnidade] = useState(null);
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[85]" onClick={onFechar}>
+      <div className="bg-white rounded-t-2xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+        {novaUnidade == null ? (
+          <>
+            <h3 className="text-lg font-bold mb-3">Mudar unidade</h3>
+            <div className="flex gap-2 mb-2">
+              {["kg", "l", "un"].map((u) => (
+                <button key={u} onClick={() => (u === unidadeAtual ? onFechar() : setNovaUnidade(u))}
+                  className={`flex-1 py-3 rounded-xl border-2 font-semibold tap-target ${u === unidadeAtual ? "border-emerald-600 bg-emerald-50 text-emerald-700" : "border-stone-300 text-stone-700"}`}>
+                  {u}{u === unidadeAtual ? " ✓" : ""}
+                </button>
+              ))}
+            </div>
+            <button onClick={onFechar} className="w-full py-2 text-stone-400 text-sm tap-target mt-2">Cancelar</button>
+          </>
+        ) : (
+          <>
+            <h3 className="text-lg font-bold mb-2">Mudar pra "{novaUnidade}"</h3>
+            <p className="text-sm text-stone-500 mb-4">Quer salvar essa unidade como padrão{nomeProduto ? ` de "${nomeProduto}"` : " desse produto"} também, pra não precisar mudar de novo na próxima compra?</p>
+            <div className="flex gap-2">
+              <button onClick={() => onEscolher(novaUnidade, false)} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Só essa vez</button>
+              <button onClick={() => onEscolher(novaUnidade, true)} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Sim, salvar</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 function SeletorBusca({ label, opcoes, valorId, onSelecionar, permitirNenhum, nenhumLabel, onCriarNovo, labelCriar }) {
   const [aberto, setAberto] = useState(false);
   const [busca, setBusca] = useState("");
@@ -5207,6 +5315,8 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
   const [formVariante, setFormVariante] = useState(null);
   const [formMarca, setFormMarca] = useState(null);
   const [formCategoria, setFormCategoria] = useState(null);
+  const [avisoDuplicataProduto, setAvisoDuplicataProduto] = useState(null);
+  const [avisoDuplicataMarca, setAvisoDuplicataMarca] = useState(null);
   const [historicoVarianteId, setHistoricoVarianteId] = useState(null);
   const [atualizando, setAtualizando] = useState(null);
   const [confirmar, setConfirmar] = useState(null);
@@ -5243,11 +5353,17 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
   }
   function salvarProduto() {
     if (!formProduto.nome.trim() || !formProduto.categoria_id) return;
+    const existe = catalogo.produtos.some((p) => p.id === formProduto.id);
+    if (!existe && !avisoDuplicataProduto) {
+      const parecido = achaNomeParecido(formProduto.nome, catalogo.produtos, null);
+      if (parecido) { setAvisoDuplicataProduto(parecido); return; }
+    }
     setCatalogo((c) => {
-      const existe = c.produtos.some((p) => p.id === formProduto.id);
-      return { ...c, produtos: existe ? c.produtos.map((p) => (p.id === formProduto.id ? formProduto : p)) : [...c.produtos, { ...formProduto, id: uid() }] };
+      const existeAgora = c.produtos.some((p) => p.id === formProduto.id);
+      return { ...c, produtos: existeAgora ? c.produtos.map((p) => (p.id === formProduto.id ? formProduto : p)) : [...c.produtos, { ...formProduto, id: uid() }] };
     });
     setFormProduto(null);
+    setAvisoDuplicataProduto(null);
   }
   function removerProduto(p) {
     const variantesDoProduto = catalogo.variantes.filter((v) => v.produto_id === p.id);
@@ -5276,11 +5392,17 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
   }
   function salvarMarca() {
     if (!formMarca.nome.trim()) return;
+    const existe = catalogo.marcas.some((m) => m.id === formMarca.id);
+    if (!existe && !avisoDuplicataMarca) {
+      const parecido = achaNomeParecido(formMarca.nome, catalogo.marcas, null);
+      if (parecido) { setAvisoDuplicataMarca(parecido); return; }
+    }
     setCatalogo((c) => {
-      const existe = c.marcas.some((m) => m.id === formMarca.id);
-      return { ...c, marcas: existe ? c.marcas.map((m) => (m.id === formMarca.id ? formMarca : m)) : [...c.marcas, { ...formMarca, id: uid() }] };
+      const existeAgora = c.marcas.some((m) => m.id === formMarca.id);
+      return { ...c, marcas: existeAgora ? c.marcas.map((m) => (m.id === formMarca.id ? formMarca : m)) : [...c.marcas, { ...formMarca, id: uid() }] };
     });
     setFormMarca(null);
+    setAvisoDuplicataMarca(null);
   }
   function removerMarca(m) {
     const emUso = catalogo.variantes.filter((v) => v.marca_id === m.id).length;
@@ -5473,7 +5595,7 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
       )}
 
       {formProduto && (
-        <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-50" onClick={() => setFormProduto(null)}>
+        <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-50" onClick={() => { setFormProduto(null); setAvisoDuplicataProduto(null); }}>
           <div className="bg-white rounded-t-2xl w-full max-w-md p-5 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-bold mb-3">{formProduto.id ? "Editar produto" : "Novo produto"}</h3>
             <label className="text-xs font-semibold text-stone-500 uppercase">Nome</label>
@@ -5487,27 +5609,39 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
             <label className="text-xs font-semibold text-stone-500 uppercase">Unidade padrão</label>
             <div className="flex gap-2 mt-1 mb-4">{["kg", "l", "un", "pacote"].map((u) => <Chip key={u} selected={formProduto.unidade_padrao === u} onClick={() => setFormProduto({ ...formProduto, unidade_padrao: u })}>{u}</Chip>)}</div>
             <div className="flex gap-2">
-              <button onClick={() => setFormProduto(null)} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
+              <button onClick={() => { setFormProduto(null); setAvisoDuplicataProduto(null); }} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
               <button onClick={salvarProduto} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Salvar</button>
             </div>
           </div>
         </div>
+      )}
+      {avisoDuplicataProduto && (
+        <ModalConfirmar titulo="Já existe um produto parecido" severo={false}
+          mensagem={`Já tem "${avisoDuplicataProduto.nome}" cadastrado. Criar "${formProduto?.nome}" mesmo assim, ou cancelar e usar o que já existe?`}
+          textoConfirmar="Criar mesmo assim" textoCancelar="Cancelar"
+          onConfirmar={salvarProduto} onCancelar={() => setAvisoDuplicataProduto(null)} />
       )}
 
       {formVariante && <FormVariante catalogo={catalogo} variante={formVariante} setVariante={setFormVariante} sessoes={sessoes} onSalvar={salvarVariante} onFechar={() => setFormVariante(null)} onVerHistorico={() => { setHistoricoVarianteId(formVariante.id); setFormVariante(null); }}
         onCriarMarca={(nome) => { const novaMarca = { id: uid(), nome }; setCatalogo((c) => ({ ...c, marcas: [...c.marcas, novaMarca] })); return novaMarca.id; }} />}
 
       {formMarca && (
-        <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-50" onClick={() => setFormMarca(null)}>
+        <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-50" onClick={() => { setFormMarca(null); setAvisoDuplicataMarca(null); }}>
           <div className="bg-white rounded-t-2xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-bold mb-3">{formMarca.id ? "Editar marca" : "Nova marca"}</h3>
             <input value={formMarca.nome} onChange={(e) => setFormMarca({ ...formMarca, nome: e.target.value })} className="w-full border border-stone-300 rounded-lg p-2.5 mb-4" placeholder="Nome da marca" />
             <div className="flex gap-2">
-              <button onClick={() => setFormMarca(null)} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
+              <button onClick={() => { setFormMarca(null); setAvisoDuplicataMarca(null); }} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
               <button onClick={salvarMarca} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Salvar</button>
             </div>
           </div>
         </div>
+      )}
+      {avisoDuplicataMarca && (
+        <ModalConfirmar titulo="Já existe uma marca parecida" severo={false}
+          mensagem={`Já tem "${avisoDuplicataMarca.nome}" cadastrada. Criar "${formMarca?.nome}" mesmo assim, ou cancelar e usar a que já existe?`}
+          textoConfirmar="Criar mesmo assim" textoCancelar="Cancelar"
+          onConfirmar={salvarMarca} onCancelar={() => setAvisoDuplicataMarca(null)} />
       )}
 
       {formCategoria && (
@@ -5863,17 +5997,29 @@ function FormNovoItemRapido({ catalogo, setCatalogo, codigoBarrasInicial, onCria
   const [codigoBarras, setCodigoBarras] = useState(codigoBarrasInicial || "");
   const [escaneando, setEscaneando] = useState(false);
 
-  /* Etapa sobre criar item/marca no fluxo de compra: cria a marca ali mesmo, sem sair do fluxo —
-     esse componente já tem setCatalogo, então não precisa de callback vindo de fora (diferente
-     do FormVariante, que recebe onCriarMarca do pai). */
-  function criarMarca(novoNome) {
+  const [avisoMarcaParecida, setAvisoMarcaParecida] = useState(null);
+  const [avisoProdutoParecido, setAvisoProdutoParecido] = useState(null);
+
+  /* Etapa sobre simplificar (seção 9.7 do mapa, nunca implementada até agora): aqui dá pra
+     oferecer "usar a existente" de verdade, diferente da tela de Produtos — já temos acesso
+     direto a setMarcaId pra selecionar na hora, sem precisar sair do fluxo de compra. */
+  function criarMarcaDeVerdade(novoNome) {
     const novaMarca = { id: uid(), nome: novoNome };
     setCatalogo((c) => ({ ...c, marcas: [...c.marcas, novaMarca] }));
     setMarcaId(novaMarca.id);
   }
+  function criarMarca(novoNome) {
+    const parecida = achaNomeParecido(novoNome, catalogo.marcas, null);
+    if (parecida) { setAvisoMarcaParecida({ existente: parecida, nomeDigitado: novoNome }); return; }
+    criarMarcaDeVerdade(novoNome);
+  }
 
   function salvar() {
     if (!nome.trim() || !categoriaId) return;
+    if (!avisoProdutoParecido) {
+      const parecido = achaNomeParecido(nome, catalogo.produtos, null);
+      if (parecido) { setAvisoProdutoParecido(parecido); return; }
+    }
     const categoria = by(catalogo.categorias, categoriaId);
     const qtdNum = tamanhoQuantidade === "" ? null : parseFloat(tamanhoQuantidade);
     const novoProduto = { id: uid(), nome: nome.trim(), descricao: "", categoria_id: categoriaId, unidade_padrao: unidadePadrao };
@@ -5915,6 +6061,19 @@ function FormNovoItemRapido({ catalogo, setCatalogo, codigoBarrasInicial, onCria
         <button onClick={onCancelar} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 text-sm tap-target">Cancelar</button>
         <button onClick={salvar} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold text-sm tap-target">Criar e continuar</button>
       </div>
+      {avisoMarcaParecida && (
+        <ModalConfirmar titulo="Já existe uma marca parecida" severo={false}
+          mensagem={`Já tem "${avisoMarcaParecida.existente.nome}" cadastrada. Criar "${avisoMarcaParecida.nomeDigitado}" mesmo assim, ou usar a que já existe?`}
+          textoConfirmar="Criar mesmo assim" textoCancelar="Usar a existente"
+          onConfirmar={() => { criarMarcaDeVerdade(avisoMarcaParecida.nomeDigitado); setAvisoMarcaParecida(null); }}
+          onCancelar={() => { setMarcaId(avisoMarcaParecida.existente.id); setAvisoMarcaParecida(null); }} />
+      )}
+      {avisoProdutoParecido && (
+        <ModalConfirmar titulo="Já existe um produto parecido" severo={false}
+          mensagem={`Já tem "${avisoProdutoParecido.nome}" cadastrado. Criar "${nome}" mesmo assim, ou cancelar e buscar o que já existe?`}
+          textoConfirmar="Criar mesmo assim" textoCancelar="Cancelar"
+          onConfirmar={() => { salvar(); }} onCancelar={() => setAvisoProdutoParecido(null)} />
+      )}
     </div>
   );
 }
@@ -5967,12 +6126,14 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
   const frequentes = calcItensFrequentes(sessoes, catalogo);
   const [busca, setBusca] = useState("");
   const [categoriaFiltro, setCategoriaFiltro] = useState(null);
+  const [categoriasExpandidas, setCategoriasExpandidas] = useState(false); // Etapa sobre filtro de categoria colapsável
   const [varianteId, setVarianteId] = useState(null);
   const [escaneando, setEscaneando] = useState(false);
   useFecharComVoltar(true, onClose);
   useFecharComVoltar(!!varianteId, () => setVarianteId(null));
   const [criandoNovo, setCriandoNovo] = useState(false);
   const [quantidade, setQuantidade] = useState(1);
+  const [trocandoUnidade, setTrocandoUnidade] = useState(false);
   const [unidade, setUnidade] = useState("un");
   const [precoTexto, setPrecoTexto] = useState("");
   const [buscandoIa, setBuscandoIa] = useState(false);
@@ -6006,7 +6167,12 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
   const produtoDaVariante = variante ? by(catalogo.produtos, variante.produto_id) : null;
 
   useEffect(() => {
-    if (variante) setUnidade(variante.tamanho_quantidade ? "un" : (produtoDaVariante?.unidade_padrao || "kg"));
+    /* Etapa sobre corrigir unidade padrão (achado real: Abobrinha vindo "un" em vez de "kg") —
+       a lógica antiga usava tamanho_quantidade pra decidir a unidade, o que está errado: ter um
+       tamanho de embalagem cadastrado (usado só pra preço por unidade, seção 5.7) não tem nada
+       a ver com qual unidade você usa pra COMPRAR o item. Unidade padrão do produto é sempre a
+       fonte certa. */
+    if (variante) setUnidade(produtoDaVariante?.unidade_padrao || "kg");
   }, [varianteId]);
 
   function infoVariante(v) {
@@ -6058,7 +6224,7 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
 
   function confirmarAdicionar() {
     const preco = parsePrecoInteligente(precoTexto);
-    const qtd = numDe(quantidade) || 1;
+    const qtd = parseQuantidadeInteligente(String(quantidade), unidade !== "un") || 1;
     if (promocaoAtual) {
       const resultado = calcularPrecoComPromocao(preco, qtd, promocaoAtual);
       if (!resultado.ativada) { alert(`Faltam ${resultado.faltam} unidade(s) pra ativar essa promoção. Aumente a quantidade ou remova a promoção pra adicionar sem desconto.`); return; }
@@ -6071,6 +6237,7 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
   const historicoGeral = varianteId ? calcHistorico(sessoes, varianteId, unidade) : null;
   const iaCache = varianteId ? ultimaEstimativa(precoIaCache, varianteId) : null;
   const precoNum = parsePrecoInteligente(precoTexto);
+  const qtdInterpretada = parseQuantidadeInteligente(String(quantidade), unidade !== "un") || 1;
   const mediaRefParaPromo = historicoGeral?.media ?? iaCache?.preco_medio_estimado ?? null;
 
   return (
@@ -6104,20 +6271,26 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
             </div>
           )}
 
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            <Chip selected={!categoriaFiltro} onClick={() => setCategoriaFiltro(null)}>Todas</Chip>
-            {catalogo.categorias.map((c) => <Chip key={c.id} selected={categoriaFiltro === c.id} onClick={() => setCategoriaFiltro(categoriaFiltro === c.id ? null : c.id)}>{c.icone} {c.nome}</Chip>)}
-          </div>
+          {!categoriasExpandidas ? (
+            <button onClick={() => setCategoriasExpandidas(true)} className="flex items-center gap-1.5 text-sm text-stone-600 border border-stone-300 rounded-lg px-3 py-2 tap-target">
+              {categoriaFiltro ? (() => { const c = by(catalogo.categorias, categoriaFiltro); return `${c?.icone || ""} ${c?.nome || ""}`; })() : "🏷️ Filtrar categoria"} <span className="text-stone-400">▾</span>
+            </button>
+          ) : (
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              <Chip selected={!categoriaFiltro} onClick={() => { setCategoriaFiltro(null); setCategoriasExpandidas(false); }}>Todas</Chip>
+              {catalogo.categorias.map((c) => <Chip key={c.id} selected={categoriaFiltro === c.id} onClick={() => { setCategoriaFiltro(categoriaFiltro === c.id ? null : c.id); setCategoriasExpandidas(false); }}>{c.icone} {c.nome}</Chip>)}
+            </div>
+          )}
 
           {!busca.trim() && !categoriaFiltro && !criandoNovo && !!frequentes.length && (
             <div>
               <div className="text-xs font-semibold text-stone-400 uppercase mb-2">Comprados com frequência</div>
-              <div className="flex gap-2 flex-wrap">
+              <div className="flex gap-2 overflow-x-auto pb-1">
                 {frequentes.map((vId) => {
                   const v = by(catalogo.variantes, vId);
                   if (!v) return null;
                   const p = by(catalogo.produtos, v.produto_id);
-                  return <Chip key={vId} onClick={() => escolherVariante(vId)}>{v.favorita && "⭐ "}{p?.nome}</Chip>;
+                  return <Chip key={vId} onClick={() => escolherVariante(vId)}><span className="whitespace-nowrap">{v.favorita && "⭐ "}{p?.nome}</span></Chip>;
                 })}
               </div>
             </div>
@@ -6200,17 +6373,37 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
             </div>
 
             <div>
-              <div className="text-xs font-semibold text-stone-400 uppercase mb-2">
-                {variante.tamanho_quantidade && unidade === "un" ? `Quantas embalagens de ${tamanhoDisplay(variante)}?` : "Quantidade"}
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold text-stone-400 uppercase">
+                  {variante.tamanho_quantidade && unidade === "un" ? `Quantas embalagens de ${tamanhoDisplay(variante)}?` : "Quantidade"}
+                </div>
+                {unidade !== "un" && <span className="text-[10px] text-stone-400 font-mono2 bg-stone-100 rounded px-1.5 py-0.5 shrink-0">098→0,98{unidade}</span>}
               </div>
-              <div className="flex items-center gap-3 flex-wrap">
-                <input value={quantidade} onChange={(e) => setQuantidade(e.target.value)} className="border border-stone-300 rounded-xl px-3 py-2.5 font-mono2 font-semibold w-24 text-center tap-target" aria-label="Quantidade" />
-                <div className="flex gap-1.5">{["kg", "l", "un"].map((u) => <Chip key={u} selected={unidade === u} onClick={() => setUnidade(u)}>{u}</Chip>)}</div>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 border border-stone-300 rounded-xl px-3 py-2.5 flex-1">
+                  <input value={quantidade} onChange={(e) => setQuantidade(e.target.value)} inputMode="decimal" className="font-mono2 font-semibold flex-1 outline-none text-center min-w-0" aria-label="Quantidade" />
+                  <span className="text-stone-400 font-mono2 text-sm shrink-0">{unidade}</span>
+                </div>
+                <button onClick={() => setTrocandoUnidade(true)} aria-label="Mudar unidade" className="border border-stone-300 rounded-xl px-3 py-2.5 text-stone-500 tap-target shrink-0">⇅</button>
               </div>
+              {unidade !== "un" && (
+                <div className="text-xs text-stone-400 mt-1">= {qtdInterpretada}{unidade}</div>
+              )}
               {variante.tamanho_quantidade && unidade === "un" && (
                 <p className="text-xs text-amber-700 bg-amber-50 rounded-lg px-2 py-1 mt-2">
-                  = {((numDe(quantidade) || 1) * variante.tamanho_quantidade).toLocaleString("pt-BR")} {variante.tamanho_unidade} no total ({numDe(quantidade) || 1}× {tamanhoDisplay(variante)})
+                  = {(qtdInterpretada * variante.tamanho_quantidade).toLocaleString("pt-BR")} {variante.tamanho_unidade} no total ({qtdInterpretada}× {tamanhoDisplay(variante)})
                 </p>
+              )}
+              {trocandoUnidade && (
+                <ModalMudarUnidade unidadeAtual={unidade} nomeProduto={produtoDaVariante?.nome}
+                  onEscolher={(novaUnidade, salvarNoCadastro) => {
+                    setUnidade(novaUnidade);
+                    if (salvarNoCadastro && produtoDaVariante) {
+                      setCatalogo((c) => ({ ...c, produtos: c.produtos.map((p) => (p.id === produtoDaVariante.id ? { ...p, unidade_padrao: novaUnidade } : p)) }));
+                    }
+                    setTrocandoUnidade(false);
+                  }}
+                  onFechar={() => setTrocandoUnidade(false)} />
               )}
             </div>
 
@@ -6228,7 +6421,7 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
               </div>
             </div>
 
-            <SecaoPromocao precoNormalNum={precoNum} quantidade={numDe(quantidade) || 1} unidade={unidade} mediaRef={mediaRefParaPromo} valorInicial={null} onMudar={setPromocaoAtual} />
+            <SecaoPromocao precoNormalNum={precoNum} quantidade={qtdInterpretada} unidade={unidade} mediaRef={mediaRefParaPromo} valorInicial={null} onMudar={setPromocaoAtual} />
           </div>
           <div className="p-4 border-t border-stone-200 shrink-0"><button onClick={confirmarAdicionar} className="w-full bg-emerald-700 text-white font-semibold py-3 rounded-xl tap-target">Adicionar à lista</button></div>
         </>
@@ -6241,11 +6434,21 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
    LINHA DE ITEM — indicador de cor visível em Lista E Carrinho (seção 22.1),
    layout em 3 linhas pra nunca cortar preço/indicador
 ========================================================= */
-function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, onRemoverConfirmado }) {
+function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, onRemoverConfirmado, onAtualizarQuantidade }) {
   const variante = by(catalogo.variantes, item.produto_variante_id);
   const produto = variante && by(catalogo.produtos, variante.produto_id);
   const marca = variante?.marca_id ? by(catalogo.marcas, variante.marca_id) : null;
   const categoria = produto && by(catalogo.categorias, produto.categoria_id);
+  /* Etapa sobre editar quantidade direto na lista: estado local só dessa linha — toca no número,
+     vira campo, confirma ao sair do foco ou Enter, sem precisar abrir o editor inteiro. Usa a
+     mesma regra de "peso inteligente" quando a unidade é fracionável (kg/L). */
+  const [editandoQtd, setEditandoQtd] = useState(false);
+  const [qtdEditavel, setQtdEditavel] = useState("");
+  function confirmarQtd() {
+    const nova = parseQuantidadeInteligente(qtdEditavel, item.unidade !== "un");
+    if (nova != null && nova > 0) onAtualizarQuantidade(item, nova);
+    setEditandoQtd(false);
+  }
 
   const temPromocao = !!item.promocao;
   const indicador = !temPromocao && item.preco_pago != null ? calcIndicador(item.preco_pago, mediaRef) : null;
@@ -6258,21 +6461,32 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
         {variante?.foto ? <img src={variante.foto} className="w-full h-full object-cover" alt="" /> : (categoria?.icone || "🛒")}
       </div>
 
-      <button onClick={() => onAbrirEditor(item)} aria-label={`Editar ${produto?.nome || "item"}`} className="flex-1 min-w-0 text-left">
-        <div className="handwrite text-xl leading-tight truncate" style={{ color: item.comprado ? "var(--ink-blue)" : "var(--ink-black)", textDecoration: item.comprado ? "line-through" : "none" }}>
-          {variante?.favorita && "⭐ "}{produto?.nome}
+      <div className="flex-1 min-w-0">
+        <button onClick={() => onAbrirEditor(item)} aria-label={`Editar ${produto?.nome || "item"}`} className="text-left w-full">
+          <div className="handwrite text-xl leading-tight truncate" style={{ color: item.comprado ? "var(--ink-blue)" : "var(--ink-black)", textDecoration: item.comprado ? "line-through" : "none" }}>
+            {variante?.favorita && "⭐ "}{produto?.nome}
+          </div>
+        </button>
+        <div className="text-xs text-stone-500 flex items-center gap-1">
+          <button onClick={() => onAbrirEditor(item)} className="truncate text-left">{marca?.nome || "genérico"}</button>
+          <span className="shrink-0">·</span>
+          {editandoQtd ? (
+            <input autoFocus inputMode="decimal" value={qtdEditavel} onChange={(e) => setQtdEditavel(e.target.value)}
+              onBlur={confirmarQtd} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+              className="w-14 font-mono2 border-b-2 border-emerald-600 outline-none text-center shrink-0" aria-label="Editar quantidade" />
+          ) : (
+            <button onClick={() => { setQtdEditavel(String(item.quantidade)); setEditandoQtd(true); }} aria-label="Tocar pra editar a quantidade"
+              className="font-mono2 underline decoration-dotted decoration-stone-300 shrink-0 tap-target">
+              {variante?.tamanho_quantidade && item.unidade === "un" ? `${item.quantidade}× ${tamanhoDisplay(variante)}` : `${item.quantidade}${item.unidade}`}
+            </button>
+          )}
         </div>
-        <div className="text-xs text-stone-500 truncate">
-          {marca?.nome || "genérico"} · <span className="font-mono2">
-            {variante?.tamanho_quantidade && item.unidade === "un"
-              ? `${item.quantidade}× ${tamanhoDisplay(variante)}`
-              : `${item.quantidade}${item.unidade}`}
-          </span>
-        </div>
-        <div className="text-xs font-mono2 font-semibold" style={{ color: corPreco }}>
-          {item.preco_pago != null ? <>{brl(item.subtotal)}{temPromocao ? " 🏷️" : simbolo}</> : <span className="text-stone-400 font-normal">sem preço ainda</span>}
-        </div>
-      </button>
+        <button onClick={() => onAbrirEditor(item)} className="text-left w-full">
+          <div className="text-xs font-mono2 font-semibold" style={{ color: corPreco }}>
+            {item.preco_pago != null ? <>{brl(item.subtotal)}{temPromocao ? " 🏷️" : simbolo}</> : <span className="text-stone-400 font-normal">sem preço ainda</span>}
+          </div>
+        </button>
+      </div>
 
       <div className="flex items-center gap-2.5 shrink-0">
         <button
@@ -6393,6 +6607,7 @@ function ModalEditarItem({ item, marcarComprado, catalogo, setCatalogo, sessoes,
   const [buscandoIa, setBuscandoIa] = useState(false);
   const [alertaOutlier, setAlertaOutlier] = useState(false);
   const [promocaoAtual, setPromocaoAtual] = useState(item.promocao || null);
+  const [trocandoUnidade, setTrocandoUnidade] = useState(false);
 
   const mediaRecente = calcMediaRecente(sessoes, item.produto_variante_id, unidade, sessaoAtiva.mercado_id);
   const mediaGeral = calcHistorico(sessoes, item.produto_variante_id, unidade)?.media;
@@ -6401,7 +6616,7 @@ function ModalEditarItem({ item, marcarComprado, catalogo, setCatalogo, sessoes,
   const referencia = referenciaComFonte(mediaRecente, mediaGeral, referenciaCruzada, iaCache?.preco_medio_estimado);
   const mediaRef = referencia?.valor ?? null;
   const precoNum = parsePrecoInteligente(precoTexto); // quando tem promocaoAtual, isso é o preço NORMAL (sem desconto)
-  const qtdNum = numDe(qtdTexto) || item.quantidade;
+  const qtdNum = parseQuantidadeInteligente(String(qtdTexto), unidade !== "un") || item.quantidade;
   const resultadoPromo = promocaoAtual && precoNum != null ? calcularPrecoComPromocao(precoNum, qtdNum, promocaoAtual) : null;
 
   async function atualizarIA() {
@@ -6477,19 +6692,37 @@ function ModalEditarItem({ item, marcarComprado, catalogo, setCatalogo, sessoes,
           </div>
         )}
 
-        <label className="text-xs font-semibold text-stone-500 uppercase">
-          {variante?.tamanho_quantidade && unidade === "un" ? `Quantas embalagens de ${tamanhoDisplay(variante)}?` : "Quantidade (aceita decimal — ex: 0,68 ou 1,1)"}
-        </label>
-        <div className="flex items-center gap-2 mt-1 mb-1">
-          <input value={qtdTexto} onChange={(e) => setQtdTexto(e.target.value)} placeholder="1" className="font-mono2 font-bold text-lg border border-stone-300 rounded-lg p-2.5 w-28 text-center tap-target" aria-label="Quantidade" />
-          <div className="flex gap-1.5">{["kg", "l", "un"].map((u) => <Chip key={u} selected={unidade === u} onClick={() => setUnidade(u)}>{u}</Chip>)}</div>
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-semibold text-stone-500 uppercase">
+            {variante?.tamanho_quantidade && unidade === "un" ? `Quantas embalagens de ${tamanhoDisplay(variante)}?` : "Quantidade"}
+          </label>
+          {unidade !== "un" && <span className="text-[10px] text-stone-400 font-mono2 bg-stone-100 rounded px-1.5 py-0.5 shrink-0">098→0,98{unidade}</span>}
         </div>
+        <div className="flex items-center gap-2 mt-1">
+          <div className="flex items-center gap-1.5 border border-stone-300 rounded-lg px-3 py-2.5 flex-1">
+            <input value={qtdTexto} onChange={(e) => setQtdTexto(e.target.value)} inputMode="decimal" placeholder="1" className="font-mono2 font-bold text-lg flex-1 outline-none text-center min-w-0" aria-label="Quantidade" />
+            <span className="text-stone-400 font-mono2 shrink-0">{unidade}</span>
+          </div>
+          <button onClick={() => setTrocandoUnidade(true)} aria-label="Mudar unidade" className="border border-stone-300 rounded-lg px-3 py-2.5 text-stone-500 tap-target shrink-0">⇅</button>
+        </div>
+        {unidade !== "un" && <div className="text-xs text-stone-400 mt-1">= {qtdNum}{unidade}</div>}
         {variante?.tamanho_quantidade && unidade === "un" && (
-          <p className="text-xs text-amber-700 bg-amber-50 rounded-lg px-2 py-1 mb-3">
+          <p className="text-xs text-amber-700 bg-amber-50 rounded-lg px-2 py-1 mt-2 mb-3">
             = {(qtdNum * variante.tamanho_quantidade).toLocaleString("pt-BR")} {variante.tamanho_unidade} no total ({qtdNum}× {tamanhoDisplay(variante)})
           </p>
         )}
         {!(variante?.tamanho_quantidade && unidade === "un") && <div className="mb-3" />}
+        {trocandoUnidade && (
+          <ModalMudarUnidade unidadeAtual={unidade} nomeProduto={produto?.nome}
+            onEscolher={(novaUnidade, salvarNoCadastro) => {
+              setUnidade(novaUnidade);
+              if (salvarNoCadastro && produto) {
+                setCatalogo((c) => ({ ...c, produtos: c.produtos.map((p) => (p.id === produto.id ? { ...p, unidade_padrao: novaUnidade } : p)) }));
+              }
+              setTrocandoUnidade(false);
+            }}
+            onFechar={() => setTrocandoUnidade(false)} />
+        )}
 
         <div className="flex items-center justify-between">
           <label className="text-xs font-semibold text-stone-500 uppercase">{promocaoAtual ? `Preço normal (sem desconto), por ${unidade}` : `Preço (por ${unidade})`}</label>
@@ -6786,7 +7019,9 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
          que processava e descartava, sem deixar nada salvo pra reconferir depois. */
       const arquivoBase64 = "data:text/plain;charset=utf-8;base64," + btoa(unescape(encodeURIComponent(textoColado)));
       const htmlReconstruido = montarHtmlRecibo({
-        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, dataEmissao: nfeLida.data_emissao,
+        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, endereco: nfeLida.endereco, dataEmissao: nfeLida.data_emissao,
+        valorDesconto: nfeLida.valor_desconto, formaPagamento: nfeLida.forma_pagamento, numeroNota: nfeLida.numero_nota, serieNota: nfeLida.serie_nota,
+        protocolo: nfeLida.protocolo_autorizacao, tributos: nfeLida.tributos,
         valorTotal: nfeLida.valor_total, itens: nfeLida.itens, chaveAcesso: nfeLida.chave_acesso,
         avisoOrigem: "Reconstruído a partir do texto colado da consulta oficial — não é o documento oficial.",
       });
@@ -6835,7 +7070,9 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
         r.readAsDataURL(file);
       });
       const htmlReconstruido = montarHtmlRecibo({
-        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, dataEmissao: nfeLida.data_emissao,
+        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, endereco: nfeLida.endereco, dataEmissao: nfeLida.data_emissao,
+        valorDesconto: nfeLida.valor_desconto, formaPagamento: nfeLida.forma_pagamento, numeroNota: nfeLida.numero_nota, serieNota: nfeLida.serie_nota,
+        protocolo: nfeLida.protocolo_autorizacao, tributos: nfeLida.tributos,
         valorTotal: nfeLida.valor_total, itens: nfeLida.itens, chaveAcesso: nfeLida.chave_acesso,
         avisoOrigem: "Reconstruído a partir do PDF da nota — não é o documento oficial.",
       });
@@ -6985,19 +7222,28 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
                     📎 Anexar "{arquivoCompartilhado.nome}" (recebido)
                   </button>
                 )}
-                <label className="flex items-center justify-center gap-2 border-2 border-dashed border-stone-300 rounded-xl py-3 text-sm text-stone-500 cursor-pointer tap-target">
-                  📎 Anexar PDF da nota
-                  <input type="file" accept=".pdf,application/pdf" onChange={aoEscolherArquivo} className="hidden" />
-                </label>
-                {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
-
+                {/* Etapa sobre simplificar mais um nível: antes "Anexar PDF" já vinha sempre
+                    visível, com só o RESTO das opções atrás de "não tenho o PDF agora". Pedido do
+                    usuário: nem isso — um botão só, tudo (PDF/QR/colar/chave) atrás dele. */}
                 {!maisOpcoesNfe ? (
-                  <button onClick={() => setMaisOpcoesNfe(true)} className="text-xs text-stone-400 underline mt-2 block mx-auto tap-target">Não tenho o PDF agora →</button>
+                  <button onClick={() => setMaisOpcoesNfe(true)} className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-stone-300 rounded-xl py-3 text-sm text-stone-500 tap-target">
+                    📎 Adicionar nota fiscal
+                  </button>
                 ) : (
-                  <div className="mt-3 pt-3 border-t border-stone-200 border-dashed">
-                    <button onClick={() => setLendoQr(true)} className="w-full flex items-center justify-center gap-2 border border-stone-300 rounded-xl py-2.5 text-sm text-stone-500 tap-target">
+                  <div>
+                    <label className="flex items-center justify-center gap-2 border-2 border-dashed border-stone-300 rounded-xl py-3 text-sm text-stone-500 cursor-pointer tap-target">
+                      📎 Anexar PDF da nota
+                      <input type="file" accept=".pdf,application/pdf" onChange={aoEscolherArquivo} className="hidden" />
+                    </label>
+                    {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
+                    <button onClick={() => setLendoQr(true)} className="w-full flex items-center justify-center gap-2 border border-stone-300 rounded-xl py-2.5 text-sm text-stone-500 mt-1.5 tap-target">
                       📷 Ler QR Code da nota
                     </button>
+                    {!colandoTexto && (
+                      <button onClick={() => setColandoTexto(true)} className="w-full flex items-center justify-center gap-2 border border-stone-300 rounded-xl py-2.5 text-sm text-stone-500 mt-1.5 tap-target">
+                        📋 Já copiei o texto da nota, colar aqui
+                      </button>
+                    )}
                     {!digitandoChave ? (
                       <button onClick={() => setDigitandoChave(true)} className="text-xs text-stone-400 underline mt-1.5 tap-target">QR não lê? Digitar a chave de acesso manualmente</button>
                     ) : (
@@ -7131,6 +7377,12 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
   function abrirEditor(item, marcarCompradoAoSalvar) { setItemEditandoRaw({ item, marcarCompradoAoSalvar: !!marcarCompradoAoSalvar }); }
   const [confirmar, setConfirmar] = useState(null);
   const [modalOrcamento, setModalOrcamento] = useState(false);
+  /* Etapa sobre simplificar: seção 6.12 pedia esse resumo "ao vivo" durante a compra, mas sumiu
+     numa reversão antiga (seção 22.1, que tirou o GRÁFICO daqui — o texto simples original nunca
+     voltou). Traz de volta como texto compacto e colapsável (não gráfico — essa decisão de tirar
+     o gráfico daqui continua valendo), pra não voltar a pesar a tela como o cabeçalho pesava antes. */
+  const [mostrarSubtotalCategoria, setMostrarSubtotalCategoria] = useState(false);
+  const [mostrarLegenda, setMostrarLegenda] = useState(false); // Etapa sobre cabeçalho compacto — legenda vira popover
 
   useEffect(() => {
     if (sessaoEmCorrecaoId) { setSessaoAbertaId(sessaoEmCorrecaoId); return; }
@@ -7182,6 +7434,11 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
   function atualizarSessao(patch) { setSessoes((ss) => ss.map((s) => (s.id === sessaoAtiva.id ? { ...s, ...patch } : s))); }
   function atualizarItem(itemId, patch) { atualizarSessao({ itens: sessaoAtiva.itens.map((it) => (it.id === itemId ? { ...it, ...patch } : it)) }); }
   function toggleComprado(item) { atualizarItem(item.id, { comprado: !item.comprado }); }
+  function atualizarQuantidade(item, novaQtd) {
+    const patch = { quantidade: novaQtd };
+    if (item.preco_pago != null) patch.subtotal = multiplicarValor(item.preco_pago, novaQtd);
+    atualizarItem(item.id, patch);
+  }
   function pedirRemocao(item) {
     const v = by(catalogo.variantes, item.produto_variante_id);
     const p = v && by(catalogo.produtos, v.produto_id);
@@ -7264,13 +7521,26 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
             <button onClick={cancelarCompra} className="text-xs text-red-400 tap-target">{emCorrecao ? "Cancelar correção" : "Excluir"}</button>
           </div>
         </div>
-        <button onClick={() => setModalOrcamento(true)} className="w-full flex items-center justify-between text-xs px-1 mb-2 tap-target">
-          <span className="text-stone-400">🎯 {sessaoAtiva.orcamento != null ? `Orçamento: ${brl(sessaoAtiva.orcamento)}` : "Definir orçamento pra essa compra"}</span>
-          <span className="text-emerald-700 font-semibold">{sessaoAtiva.orcamento != null ? "editar" : "+"}</span>
-        </button>
-        <div className="flex gap-3 text-xs text-stone-500 px-1">
-          <span style={{ color: "var(--ink-black)" }}>● padrão</span><span style={{ color: "var(--ink-blue)" }}>● comprado</span><span style={{ color: "var(--ink-green)" }}>▼ bom preço</span><span style={{ color: "var(--ink-red)" }}>▲ caro</span>
+        <div className="flex items-center justify-end gap-3 px-1 mb-2 text-xs">
+          <button onClick={() => setModalOrcamento(true)} className="text-stone-400 tap-target flex items-center gap-1">
+            🎯 {sessaoAtiva.orcamento != null ? brl(sessaoAtiva.orcamento) : "Orçamento"}
+          </button>
+          <button onClick={() => setMostrarLegenda(true)} aria-label="Ver legenda de cores da lista" className="w-5 h-5 rounded-full border border-stone-300 text-stone-400 font-bold flex items-center justify-center tap-target shrink-0">?</button>
         </div>
+        {mostrarLegenda && (
+          <div className="fixed inset-0 z-[80] bg-black/30 flex items-center justify-center px-8" onClick={() => setMostrarLegenda(false)}>
+            <div className="bg-white rounded-xl p-4 text-sm w-full max-w-xs" onClick={(e) => e.stopPropagation()}>
+              <div className="font-semibold mb-2 text-stone-700">Cores da lista</div>
+              <div className="space-y-1.5">
+                <div style={{ color: "var(--ink-black)" }}>● padrão (ainda não comprado)</div>
+                <div style={{ color: "var(--ink-blue)" }}>● comprado</div>
+                <div style={{ color: "var(--ink-green)" }}>▼ bom preço</div>
+                <div style={{ color: "var(--ink-red)" }}>▲ caro</div>
+              </div>
+              <button onClick={() => setMostrarLegenda(false)} className="w-full mt-3 py-2 text-emerald-700 font-semibold text-sm tap-target">Fechar</button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex-1 relative overflow-hidden">
@@ -7286,7 +7556,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
                     <div className="text-xs uppercase tracking-wide text-stone-500 font-semibold mb-1">{grupo.icone} {grupo.nome}</div>
                     {grupo.itens.map((it) => (
                       <ItemLinha key={it.id} item={it} catalogo={catalogo} mediaRef={mediaRefPara(it)}
-                        onAbrirEditor={abrirEditor} onToggleComprado={toggleComprado} onRemoverConfirmado={pedirRemocao} />
+                        onAbrirEditor={abrirEditor} onToggleComprado={toggleComprado} onRemoverConfirmado={pedirRemocao} onAtualizarQuantidade={atualizarQuantidade} />
                     ))}
                   </div>
                 ))}
@@ -7301,7 +7571,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
                     <div className="text-xs uppercase tracking-wide text-stone-500 font-semibold mb-1">{grupo.icone} {grupo.nome}</div>
                     {grupo.itens.map((it) => (
                       <ItemLinha key={it.id} item={it} catalogo={catalogo} mediaRef={mediaRefPara(it)}
-                        onAbrirEditor={abrirEditor} onToggleComprado={toggleComprado} onRemoverConfirmado={pedirRemocao} />
+                        onAbrirEditor={abrirEditor} onToggleComprado={toggleComprado} onRemoverConfirmado={pedirRemocao} onAtualizarQuantidade={atualizarQuantidade} />
                     ))}
                   </div>
                 ))}
@@ -7311,6 +7581,19 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
         </div>
         <button onClick={() => setModalAdd(true)} aria-label="Adicionar item" className="absolute right-4 bottom-4 w-14 h-14 rounded-full bg-emerald-800 text-white shadow-lg flex items-center justify-center text-2xl">+</button>
       </div>
+
+      {!!itensCarrinhoParaTotal.length && (
+        <div className="border-t border-stone-100 bg-white px-3 pt-1.5 shrink-0">
+          <button onClick={() => setMostrarSubtotalCategoria((v) => !v)} className="text-xs text-stone-400 flex items-center gap-1 tap-target">
+            🏷️ Gasto por categoria {mostrarSubtotalCategoria ? "▴" : "▾"}
+          </button>
+          {mostrarSubtotalCategoria && (
+            <div className="text-xs text-stone-500 pb-1.5 pt-0.5">
+              {Object.entries(subtotalPorCategoria(itensCarrinhoParaTotal, catalogo)).map(([nome, valor]) => `${nome}: ${brl(valor)}`).join(" · ")}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="border-t border-stone-200 bg-white p-3 flex items-center justify-between shrink-0">
         <div className="flex gap-4">
@@ -7393,7 +7676,9 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
          que processava e descartava, sem deixar nada salvo pra reconferir depois. */
       const arquivoBase64 = "data:text/plain;charset=utf-8;base64," + btoa(unescape(encodeURIComponent(textoColado)));
       const htmlReconstruido = montarHtmlRecibo({
-        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, dataEmissao: nfeLida.data_emissao,
+        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, endereco: nfeLida.endereco, dataEmissao: nfeLida.data_emissao,
+        valorDesconto: nfeLida.valor_desconto, formaPagamento: nfeLida.forma_pagamento, numeroNota: nfeLida.numero_nota, serieNota: nfeLida.serie_nota,
+        protocolo: nfeLida.protocolo_autorizacao, tributos: nfeLida.tributos,
         valorTotal: nfeLida.valor_total, itens: nfeLida.itens, chaveAcesso: nfeLida.chave_acesso,
         avisoOrigem: "Reconstruído a partir do texto colado da consulta oficial — não é o documento oficial.",
       });
@@ -7456,7 +7741,9 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
         r.readAsDataURL(file);
       });
       const htmlReconstruido = montarHtmlRecibo({
-        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, dataEmissao: nfeLida.data_emissao,
+        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, endereco: nfeLida.endereco, dataEmissao: nfeLida.data_emissao,
+        valorDesconto: nfeLida.valor_desconto, formaPagamento: nfeLida.forma_pagamento, numeroNota: nfeLida.numero_nota, serieNota: nfeLida.serie_nota,
+        protocolo: nfeLida.protocolo_autorizacao, tributos: nfeLida.tributos,
         valorTotal: nfeLida.valor_total, itens: nfeLida.itens, chaveAcesso: nfeLida.chave_acesso,
         avisoOrigem: "Reconstruído a partir do PDF da nota — não é o documento oficial.",
       });
@@ -7547,19 +7834,25 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
             )
           ) : (
             <>
-              <label className="flex items-center justify-center gap-2 border-2 border-dashed border-stone-300 rounded-xl py-3 text-sm text-stone-500 cursor-pointer tap-target">
-                📎 Anexar PDF da nota agora
-                <input type="file" accept=".pdf,application/pdf" onChange={aoEscolherArquivo} className="hidden" />
-              </label>
-              {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
-
               {!maisOpcoesNfe ? (
-                <button onClick={() => setMaisOpcoesNfe(true)} className="text-xs text-stone-400 underline mt-2 block mx-auto tap-target">Não tenho o PDF agora →</button>
+                <button onClick={() => setMaisOpcoesNfe(true)} className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-stone-300 rounded-xl py-3 text-sm text-stone-500 tap-target">
+                  📎 Adicionar nota fiscal agora
+                </button>
               ) : (
-                <div className="mt-3 pt-3 border-t border-stone-200 border-dashed">
-                  <button onClick={() => setLendoQr(true)} className="w-full flex items-center justify-center gap-2 border border-stone-300 rounded-xl py-2.5 text-sm text-stone-500 tap-target">
+                <div>
+                  <label className="flex items-center justify-center gap-2 border-2 border-dashed border-stone-300 rounded-xl py-3 text-sm text-stone-500 cursor-pointer tap-target">
+                    📎 Anexar PDF da nota agora
+                    <input type="file" accept=".pdf,application/pdf" onChange={aoEscolherArquivo} className="hidden" />
+                  </label>
+                  {erroNfe && <p className="text-xs text-red-600 mt-2">{erroNfe}</p>}
+                  <button onClick={() => setLendoQr(true)} className="w-full flex items-center justify-center gap-2 border border-stone-300 rounded-xl py-2.5 text-sm text-stone-500 mt-1.5 tap-target">
                     📷 Ler QR Code da nota
                   </button>
+                  {!colandoTexto && (
+                    <button onClick={() => setColandoTexto(true)} className="w-full flex items-center justify-center gap-2 border border-stone-300 rounded-xl py-2.5 text-sm text-stone-500 mt-1.5 tap-target">
+                      📋 Já copiei o texto da nota, colar aqui
+                    </button>
+                  )}
                   {!digitandoChave ? (
                     <button onClick={() => setDigitandoChave(true)} className="text-xs text-stone-400 underline mt-1.5 tap-target">QR não lê? Digitar a chave de acesso manualmente</button>
                   ) : (

@@ -1144,6 +1144,7 @@ function categoriaAutoDetectada(descricaoOriginal, tipo, categorias) {
    conta diferente. */
 function conciliarTransacoesImportadas(transacoesImportadas, lancamentosExistentes, contaId) {
   const JANELA_DIAS = 3;
+  const JANELA_DIAS_CONTRACHEQUE = 7; // salário varia mais de data que um PIX comum — seção sobre simplificar, pendência antiga do contracheque duplicando
   const candidatos = lancamentosExistentes.filter((l) => l.conta_id === contaId && !l.origem_extrato && !l.conciliado);
   const usados = new Set();
   const conciliadas = [];
@@ -1156,7 +1157,7 @@ function conciliarTransacoesImportadas(transacoesImportadas, lancamentosExistent
       if (l.tipo !== t.tipo) return false;
       if (Math.abs(l.valor - t.valor) >= 0.01) return false;
       const difDias = Math.abs(new Date(l.data).getTime() - dataT) / 86400000;
-      return difDias <= JANELA_DIAS;
+      return difDias <= (l.origem_contracheque ? JANELA_DIAS_CONTRACHEQUE : JANELA_DIAS);
     });
     if (candidato) { usados.add(candidato.id); conciliadas.push({ transacaoImportada: t, lancamentoExistenteId: candidato.id }); }
     else novasDoBanco.push(t);
@@ -1499,7 +1500,9 @@ function ModalLancamento({ lancamento, tipoInicial, categorias, contas, contaPad
       const nfeLida = parsearTextoConsultaNFCe(textoNotaColada);
       const arquivoBase64 = "data:text/plain;charset=utf-8;base64," + btoa(unescape(encodeURIComponent(textoNotaColada)));
       const htmlReconstruido = montarHtmlRecibo({
-        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, dataEmissao: nfeLida.data_emissao,
+        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, endereco: nfeLida.endereco, dataEmissao: nfeLida.data_emissao,
+        valorDesconto: nfeLida.valor_desconto, formaPagamento: nfeLida.forma_pagamento, numeroNota: nfeLida.numero_nota, serieNota: nfeLida.serie_nota,
+        protocolo: nfeLida.protocolo_autorizacao, tributos: nfeLida.tributos,
         valorTotal: nfeLida.valor_total, itens: nfeLida.itens, chaveAcesso: nfeLida.chave_acesso,
         avisoOrigem: "Reconstruído a partir do texto colado da consulta oficial — não é o documento oficial.",
       });
@@ -3114,7 +3117,13 @@ function TelaConfigFinancas({ categorias, setCategorias, contas, setContas, lanc
   const somaPercentuais = gruposOrcamento.reduce((a, g) => a + g.percentual, 0);
 
   return (
-    <div className="h-full overflow-y-auto p-4">
+    <div className="h-full flex flex-col">
+      <div className="px-4 pt-3 pb-1 shrink-0">
+        <div className="flex items-center gap-2 mb-2">
+          <div className="flex-1 text-center font-bold text-stone-800 text-sm">⚙️ Config</div>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 pt-0">
       <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
         <Chip selected={subaba === "contas"} onClick={() => setSubaba("contas")}>Contas</Chip>
         <Chip selected={subaba === "categorias"} onClick={() => setSubaba("categorias")}>Categorias</Chip>
@@ -3253,6 +3262,7 @@ function TelaConfigFinancas({ categorias, setCategorias, contas, setContas, lanc
           onFechar={() => setModalPin(null)}
         />
       )}
+      </div>
     </div>
   );
 }
@@ -3690,7 +3700,13 @@ function TelaMetas({ metas, setMetas, contas, historicoAportes, onRegistrarAport
   }
 
   return (
-    <div className="h-full overflow-y-auto p-4">
+    <div className="h-full flex flex-col">
+      <div className="px-4 pt-3 pb-1 shrink-0">
+        <div className="flex items-center gap-2 mb-2">
+          <div className="flex-1 text-center font-bold text-stone-800 text-sm">🎯 Metas</div>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 pt-0">
       <div className="flex gap-4 mb-4 border-b border-stone-200">
         <button onClick={() => setSubVisaoMetas("metas")} className={`tap-target text-sm font-semibold pb-2 border-b-2 -mb-px ${subVisaoMetas === "metas" ? "text-emerald-700 border-emerald-700" : "text-stone-400 border-transparent"}`}>🎯 Metas</button>
         <button onClick={() => setSubVisaoMetas("financiamentos")} className={`tap-target text-sm font-semibold pb-2 border-b-2 -mb-px ${subVisaoMetas === "financiamentos" ? "text-emerald-700 border-emerald-700" : "text-stone-400 border-transparent"}`}>🏠 Financiamentos</button>
@@ -3843,6 +3859,7 @@ function TelaMetas({ metas, setMetas, contas, historicoAportes, onRegistrarAport
       {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
       </>
       )}
+      </div>
     </div>
   );
 }
@@ -3868,7 +3885,9 @@ function ModalUploadDocumento({ tipoDocumento, lancamentos, categorias, contas, 
       const nfeLida = parsearTextoConsultaNFCe(textoColado);
       const arquivoBase64 = "data:text/plain;charset=utf-8;base64," + btoa(unescape(encodeURIComponent(textoColado)));
       const htmlReconstruido = montarHtmlRecibo({
-        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, dataEmissao: nfeLida.data_emissao,
+        nomeEmit: nfeLida.nome_emit, cnpj: nfeLida.cnpj_emit, endereco: nfeLida.endereco, dataEmissao: nfeLida.data_emissao,
+        valorDesconto: nfeLida.valor_desconto, formaPagamento: nfeLida.forma_pagamento, numeroNota: nfeLida.numero_nota, serieNota: nfeLida.serie_nota,
+        protocolo: nfeLida.protocolo_autorizacao, tributos: nfeLida.tributos,
         valorTotal: nfeLida.valor_total, itens: nfeLida.itens, chaveAcesso: nfeLida.chave_acesso,
         avisoOrigem: "Reconstruído a partir do texto colado da consulta oficial — não é o documento oficial.",
       });
@@ -4319,19 +4338,26 @@ function TelaDocumentos({ documentos, setDocumentos, lancamentos, onSalvarLancam
   function aoAnexarContracheque({ valorAdiantamento, valorPagamento, documento, diaAdiantamento, diaPagamento, ano, mes, contaId }) {
     const documentoId = uid();
     const lancamentosNovos = [];
+    /* Etapa sobre simplificar (pendência antiga, seção 35 do mapa): o contracheque cria o
+       lançamento na hora (mantido — sem isso o dinheiro não aparece registrado até você lembrar
+       de conciliar), mas agora marcado com origem_contracheque: true. Isso dá pra conciliação
+       (seção 28) dar mais margem de data especificamente pra esses — salário costuma cair com
+       mais variação (feriado, fim de semana, atraso da folha) que um PIX do dia a dia, então a
+       janela padrão de 3 dias é curta demais pra esse caso específico e gerava duplicata quando
+       o extrato do banco era importado depois. */
     if (valorAdiantamento != null) {
       lancamentosNovos.push({
         id: uid(), tipo: "receita", descricao: "Adiantamento quinzenal", categoria_id: "catfn_salario", valor: valorAdiantamento,
         data: new Date(ano, mes - 1, diaAdiantamento, 12).toISOString(),
         fixa: true, recorrente: false, dia_recorrencia: null, forma_pagamento: null,
-        conta_id: contaId, origem_fixo_id: null, documento_id: documentoId,
+        conta_id: contaId, origem_fixo_id: null, documento_id: documentoId, origem_contracheque: true,
       });
     }
     lancamentosNovos.push({
       id: uid(), tipo: "receita", descricao: "Pagamento (contracheque)", categoria_id: "catfn_salario", valor: valorPagamento,
       data: new Date(ano, mes - 1, diaPagamento, 12).toISOString(),
       fixa: true, recorrente: false, dia_recorrencia: null, forma_pagamento: null,
-      conta_id: contaId, origem_fixo_id: null, documento_id: documentoId,
+      conta_id: contaId, origem_fixo_id: null, documento_id: documentoId, origem_contracheque: true,
     });
     lancamentosNovos.forEach((l) => onSalvarLancamento(l));
     setDocumentos((ds) => [...ds, {
@@ -4342,7 +4368,12 @@ function TelaDocumentos({ documentos, setDocumentos, lancamentos, onSalvarLancam
 
   return (
     <div className="h-full flex flex-col">
-      <div className="p-4 pb-2 shrink-0">
+      <div className="px-4 pt-3 pb-1 shrink-0">
+        <div className="flex items-center gap-2 mb-2">
+          <div className="flex-1 text-center font-bold text-stone-800 text-sm">📄 Documentos</div>
+        </div>
+      </div>
+      <div className="px-4 pb-2 shrink-0">
         {arquivoCompartilhado && (
           <button
             onClick={() => { setArquivoParaModal(arquivoCompartilhado.arquivo); setModalUpload(true); }}
@@ -4971,7 +5002,13 @@ function TelaCartoes({ cartoes, setCartoes, lancamentos, categorias, onAnexarFat
   }
 
   return (
-    <div className="h-full overflow-y-auto p-4">
+    <div className="h-full flex flex-col">
+      <div className="px-4 pt-3 pb-1 shrink-0">
+        <div className="flex items-center gap-2 mb-2">
+          <div className="flex-1 text-center font-bold text-stone-800 text-sm">💳 Cartões</div>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 pt-0">
       <button onClick={() => setFormCartao({})} className="bg-emerald-700 text-white text-sm font-semibold px-3 py-2 rounded-lg mb-3 tap-target">+ Cartão</button>
       {!cartoes.length && <p className="text-sm text-stone-400 text-center py-10">Nenhum cartão cadastrado ainda.</p>}
       <div className="space-y-2">
@@ -4994,6 +5031,7 @@ function TelaCartoes({ cartoes, setCartoes, lancamentos, categorias, onAnexarFat
 
       {formCartao !== null && <ModalCartao cartao={formCartao.id ? formCartao : null} onSalvar={salvarCartao} onFechar={() => setFormCartao(null)} />}
       {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
+      </div>
     </div>
   );
 }

@@ -883,17 +883,27 @@ function tamanhoAproximadoKB(strBase64) {
    verNotaFiscalDoFinancas) — abrir um documento anexado numa aba nova. Quando existe uma versão
    reconstruída em HTML (Etapa 7), abre ela por padrão — mais fácil de ler que o PDF/foto crua —
    com um link "Ver arquivo original" que abre o arquivo de verdade numa segunda aba (nunca
-   embutido dentro do HTML reconstruído, pra não duplicar o arquivo guardado em dobro). Documento
-   sem reconstrução (upload antigo, ou tipo que não gera HTML) cai no comportamento de sempre. */
+   embutido de forma permanente no HTML guardado, só injetado na hora de abrir — não duplica o
+   arquivo no armazenamento). Documento sem reconstrução (upload antigo, ou tipo que não gera
+   HTML) cai no comportamento de sempre.
+
+   Achado real testando no celular: abrir com window.open() em branco + document.write() não
+   respeita a tag de viewport do HTML injetado (bug conhecido desse método em Chrome Android) —
+   a nota reconstruída aparecia minúscula, cabendo só num canto da tela. Blob URL + navegação de
+   verdade resolve, porque o navegador processa o documento como uma página carregada normal,
+   não como conteúdo injetado depois. */
 function abrirArquivoDocumento(doc) {
-  const w = window.open();
-  if (!w) return;
   if (doc.html_reconstruido) {
-    w.document.write(doc.html_reconstruido);
-    const link = w.document.getElementById("linkOriginal");
-    if (link) link.addEventListener("click", (e) => { e.preventDefault(); window.open(doc.arquivo_base64, "_blank"); });
+    const htmlFinal = doc.arquivo_base64
+      ? doc.html_reconstruido.replace('<a href="#" id="linkOriginal" class="original">', `<a href="${doc.arquivo_base64}" id="linkOriginal" class="original" target="_blank">`)
+      : doc.html_reconstruido;
+    const url = URL.createObjectURL(new Blob([htmlFinal], { type: "text/html" }));
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 60000); // libera a memória depois de um tempo, sem apressar o carregamento
     return;
   }
+  const w = window.open();
+  if (!w) return;
   if (doc.mime_type === "application/pdf") { w.document.write(`<iframe src="${doc.arquivo_base64}" style="width:100%;height:100%;border:none;"></iframe>`); return; }
   if (doc.mime_type === "text/plain") {
     const texto = decodeURIComponent(escape(atob(doc.arquivo_base64.split(",")[1])));

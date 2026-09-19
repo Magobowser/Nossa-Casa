@@ -42,17 +42,28 @@
     --paper-margin:#e0847a;
   }
   .paper-sheet{
+    position: relative;
+  }
+  /* Achado real do usuário: as linhas do papel e a linha vermelha da margem moravam em
+     .paper-sheet — que é o elemento com scroll (overflow-y-auto). Um fundo (background-image)
+     nesse tipo de elemento, no modo padrão (background-attachment: scroll), fica "travado" no
+     lugar enquanto o CONTEÚDO rola por cima — não acompanha. E a linha vermelha (::before com
+     top:0/bottom:0) só cobria a altura visível da tela, não a altura real do conteúdo, cortando
+     no meio em listas mais longas. Solução: mover os dois pra .paper-pad, que é o elemento
+     DE DENTRO que cresce naturalmente com o conteúdo (não tem scroll próprio) — assim o fundo e
+     a linha vermelha rolam junto com o texto, sempre, e cobrem a lista inteira, não só a tela. */
+  .paper-pad{
+    padding-left:44px;
+    position: relative;
     background-color: var(--paper-bg);
     background-image: repeating-linear-gradient(to bottom, transparent 0px, transparent 27px, var(--paper-line) 27px, var(--paper-line) 28px);
     background-position: 0 6px;
-    position: relative;
   }
-  .paper-sheet::before{
+  .paper-pad::before{
     content:"";
     position:absolute; top:0; bottom:0; left:30px; width:2px;
     background: var(--paper-margin); opacity:.5;
   }
-  .paper-pad{ padding-left:44px; }
 
   .ticket{ position:relative; }
   .ticket::before,.ticket::after{
@@ -104,7 +115,7 @@
 </script>
 
 <script>
-  window.VERSAO_APP = "2026.09.20-4"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
+  window.VERSAO_APP = "2026.09.20-5"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
 </script>
 
 <script>
@@ -1179,8 +1190,8 @@ function App() {
   return <>{avisoCompartilhado}<Hub onEntrar={setAbaPrincipal} /></>;
 }
 </script>
-<script type="text/babel" data-presets="react,env" src="./mercado.js?v=2026.09.20-4"></script>
-<script type="text/babel" data-presets="react,env" src="./financas.js?v=2026.09.20-4"></script>
+<script type="text/babel" data-presets="react,env" src="./mercado.js?v=2026.09.20-5"></script>
+<script type="text/babel" data-presets="react,env" src="./financas.js?v=2026.09.20-5"></script>
 <script type="text/babel" data-presets="react,env">
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>

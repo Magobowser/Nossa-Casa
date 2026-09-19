@@ -6665,6 +6665,11 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
         ✓
       </button>
 
+      {/* Etapa sobre mockup aprovado: divisória vertical emoldurando o conteúdo do item —
+         altura de 32px, centralizada, sem tocar nas bordas do item (nem no de cima, nem no de
+         baixo), como aprovado no mockup. */}
+      <div className="w-px h-8 bg-stone-300 shrink-0" />
+
       {variante?.foto && (
         <div className="w-7 h-7 rounded-lg overflow-hidden shrink-0 bg-white border border-stone-200">
           <img src={variante.foto} className="w-full h-full object-cover" alt="" />
@@ -6702,6 +6707,8 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
           </button>
         </div>
       </div>
+
+      <div className="w-px h-8 bg-stone-300 shrink-0" />
 
       {/* Etapa sobre lixeira vermelha de verdade: 🗑️ é emoji — tem cor própria fixa do sistema,
           nenhuma classe de cor (text-red-...) muda isso. Ícone desenhado (SVG) com
@@ -7874,9 +7881,17 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
                 })}
               </div>
             )}
+
+            {/* Etapa sobre mockup aprovado: o botão de adicionar item deixou de flutuar solto no
+               canto — vira a última linha da própria lista, alinhado à direita, mesma altura de
+               28px das outras linhas de texto (bate com a pauta do papel). */}
+            <button onClick={() => setModalAdd(true)} aria-label="Adicionar item"
+              className="flex items-center justify-end gap-1.5 h-7 w-full mt-1">
+              <span className="text-sm text-emerald-700 font-semibold">Adicionar produto</span>
+              <span className="w-4 h-4 rounded-full bg-emerald-700 text-white flex items-center justify-center text-[10px] font-bold shrink-0">+</span>
+            </button>
           </div>
         </div>
-        <button onClick={() => setModalAdd(true)} aria-label="Adicionar item" className="absolute right-4 bottom-4 w-14 h-14 rounded-full bg-emerald-800 text-white shadow-lg flex items-center justify-center text-2xl">+</button>
       </div>
 
       {!!itensCarrinhoParaTotal.length && (

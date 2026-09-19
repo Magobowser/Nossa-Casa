@@ -5220,7 +5220,7 @@ function entradasGraficoDeSnapshot(snapshot, catalogo) {
 /* =========================================================
    TELA: MERCADOS (com reordenar categorias)
 ========================================================= */
-function TelaMercados({ catalogo, setCatalogo, sessoes }) {
+function TelaMercados({ catalogo, setCatalogo, sessoes, onVoltarUmPasso }) {
   const [form, setForm] = useState(null);
   const [reordenando, setReordenando] = useState(false);
   const [confirmar, setConfirmar] = useState(null);
@@ -5267,10 +5267,13 @@ function TelaMercados({ catalogo, setCatalogo, sessoes }) {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="px-4 pt-3 pb-1.5 shrink-0 flex items-center justify-between">
-        <div className="font-bold text-stone-800 text-sm">🏬 Mercados</div>
+      <div className="px-3 pt-2.5 pb-1.5 shrink-0 flex items-center justify-between">
+        <div className="flex items-center gap-2 min-w-0">
+          <button onClick={onVoltarUmPasso} aria-label="Voltar" className="tap-target text-stone-500 text-lg shrink-0">←</button>
+          <div className="font-bold text-stone-800 text-sm truncate">🏬 Mercados</div>
+        </div>
         <button onClick={() => setForm({ nome: "", razao_social: "", cnpj: "", telefone: "", cor: CORES_MERCADO[0], endereco: "", ativo: true, ordem_categorias: [] })}
-          className="flex items-center gap-1 bg-emerald-700 text-white text-xs font-semibold px-2.5 py-1.5 rounded-lg tap-target">+ Novo</button>
+          className="flex items-center gap-1 bg-emerald-700 text-white text-xs font-semibold px-2.5 py-1.5 rounded-lg tap-target shrink-0">+ Novo</button>
       </div>
       <div className="flex-1 overflow-y-auto p-4 pt-2 pb-6">      <div className="space-y-2">
         {catalogo.mercados.map((m) => (
@@ -5369,7 +5372,7 @@ function TelaMercados({ catalogo, setCatalogo, sessoes }) {
 /* =========================================================
    TELA: PRODUTOS / MARCAS / CATEGORIAS
 ========================================================= */
-function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIaCache, apiKey }) {
+function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIaCache, apiKey, onVoltarUmPasso }) {
   const [subaba, setSubaba] = useState("produtos");
   const [busca, setBusca] = useState("");
   const [produtoAberto, setProdutoAberto] = useState(null);
@@ -5527,8 +5530,9 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
 
   return (
     <div className="h-full flex flex-col">
-      <div className="px-4 pt-3 pb-1.5 shrink-0">
-        <div className="font-bold text-stone-800 text-sm text-center">📦 Produtos</div>
+      <div className="px-3 pt-2.5 pb-1.5 shrink-0 flex items-center gap-2">
+        <button onClick={onVoltarUmPasso} aria-label="Voltar" className="tap-target text-stone-500 text-lg shrink-0">←</button>
+        <div className="font-bold text-stone-800 text-sm">📦 Produtos</div>
       </div>
       <div className="flex-1 overflow-y-auto p-4 pt-2 pb-6">
       <div className="flex gap-2 mb-4">
@@ -6665,10 +6669,25 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
             <input autoFocus inputMode="decimal" value={qtdEditavel} onChange={(e) => setQtdEditavel(e.target.value)}
               onBlur={confirmarQtd} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
               className="w-14 font-mono2 border-b-2 border-emerald-600 outline-none text-center shrink-0" aria-label="Editar quantidade" />
+          ) : item.unidade === "un" ? (
+            /* Etapa sobre testar os dois jeitos: pra unidade inteira, o −/+ convive com o toque-
+               pra-editar (que continua igual) — pedido do usuário pra comparar os dois na prática
+               antes de decidir qual fica. Pra kg/L, só o toque-pra-editar continua fazendo
+               sentido (não dá pra "+1" um peso fracionado). */
+            <span className="flex items-center gap-1 shrink-0">
+              <button onClick={() => onAtualizarQuantidade(item, Math.max(1, item.quantidade - 1))} aria-label="Diminuir quantidade"
+                className="w-5 h-5 rounded-full border border-stone-300 flex items-center justify-center text-stone-500 text-xs leading-none p-2 -m-2">−</button>
+              <button onClick={() => { setQtdEditavel(String(item.quantidade)); setEditandoQtd(true); }} aria-label="Tocar pra editar a quantidade"
+                className="font-mono2 underline decoration-dotted decoration-stone-300 shrink-0 py-1.5 -my-1.5">
+                {variante?.tamanho_quantidade ? `${item.quantidade}× ${tamanhoDisplay(variante)}` : `${item.quantidade}${item.unidade}`}
+              </button>
+              <button onClick={() => onAtualizarQuantidade(item, item.quantidade + 1)} aria-label="Aumentar quantidade"
+                className="w-5 h-5 rounded-full border border-stone-300 flex items-center justify-center text-stone-500 text-xs leading-none p-2 -m-2">+</button>
+            </span>
           ) : (
             <button onClick={() => { setQtdEditavel(String(item.quantidade)); setEditandoQtd(true); }} aria-label="Tocar pra editar a quantidade"
               className="font-mono2 underline decoration-dotted decoration-stone-300 shrink-0 py-1.5 -my-1.5">
-              {variante?.tamanho_quantidade && item.unidade === "un" ? `${item.quantidade}× ${tamanhoDisplay(variante)}` : `${item.quantidade}${item.unidade}`}
+              {item.quantidade}{item.unidade}
             </button>
           )}
           <span className="shrink-0 text-stone-300">·</span>
@@ -7593,7 +7612,7 @@ function ModalOrcamento({ orcamentoAtual, onSalvar, onFechar }) {
   );
 }
 
-function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, setPrecoIaCache, apiKey, onSessaoFinalizada, sessaoEmCorrecaoId, arquivoCompartilhado, onUsarArquivoCompartilhado }) {
+function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, setPrecoIaCache, apiKey, onSessaoFinalizada, sessaoEmCorrecaoId, arquivoCompartilhado, onUsarArquivoCompartilhado, onVoltarUmPasso }) {
   const ativas = sessoes.filter((s) => s.status === "em_andamento");
   const [sessaoAbertaId, setSessaoAbertaId] = useState(null);
   const [modalNova, setModalNova] = useState(false);
@@ -7632,6 +7651,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
     const avisos = itensBaratosAgora(catalogo, sessoes, precoIaCache);
     return (
       <div className="h-full overflow-y-auto p-4">
+        <button onClick={onVoltarUmPasso} aria-label="Voltar ao início" className="tap-target text-stone-500 text-lg -ml-1 mb-1 block">←</button>
         <div className="text-center py-12">
           <div className="text-5xl mb-3">🧺</div>
           <p className="text-stone-500 mb-4">Nenhuma compra em andamento.</p>
@@ -7651,6 +7671,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
   if (ativas.length > 1 && !sessaoAbertaId && !sessaoEmCorrecaoId) {
     return (
       <div className="h-full overflow-y-auto p-4">
+        <button onClick={onVoltarUmPasso} aria-label="Voltar ao início" className="tap-target text-stone-500 text-lg -ml-1 mb-1 block">←</button>
         <h2 className="text-lg font-bold text-stone-700 mb-3">Você tem {ativas.length} compras em andamento — qual quer continuar?</h2>
         <div className="space-y-2">
           {ativas.map((s) => {
@@ -7750,6 +7771,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
         )}
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 min-w-0">
+            <button onClick={onVoltarUmPasso} aria-label="Voltar ao início" className="tap-target text-stone-500 text-lg shrink-0 -ml-1">←</button>
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: mercado?.cor }} />
             <span className="font-bold text-stone-800 truncate">{mercado?.nome}</span>
             <span className="text-xs text-stone-400 shrink-0">· {dataCurta(sessaoAtiva.data_hora)}</span>
@@ -8184,7 +8206,7 @@ function SessaoDetalhe({ catalogo, setCatalogo, sessao, sessoes, setSessoes, onC
    sub-aba "Compras" (lista + busca + filtros) primeiro,
    sub-aba "Resumo" (agregados em gráfico) separada.
 ========================================================= */
-function TelaHistorico({ catalogo, setCatalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAutomatico, onReabriuParaCorrecao }) {
+function TelaHistorico({ catalogo, setCatalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAutomatico, onReabriuParaCorrecao, onVoltarUmPasso }) {
   const [subaba, setSubaba] = useState("compras");
   const [busca, setBusca] = useState("");
   const [filtroMercado, setFiltroMercado] = useState("");
@@ -8234,8 +8256,9 @@ function TelaHistorico({ catalogo, setCatalogo, sessoes, setSessoes, abrirSessao
 
   return (
     <div className="h-full flex flex-col">
-      <div className="px-4 pt-3 pb-1.5 shrink-0">
-        <div className="font-bold text-stone-800 text-sm text-center">🕓 Histórico</div>
+      <div className="px-3 pt-2.5 pb-1.5 shrink-0 flex items-center gap-2">
+        <button onClick={onVoltarUmPasso} aria-label="Voltar" className="tap-target text-stone-500 text-lg shrink-0">←</button>
+        <div className="font-bold text-stone-800 text-sm">🕓 Histórico</div>
       </div>
       <div className="flex-1 overflow-y-auto p-4 pt-2 pb-6">
       <div className="flex gap-2 mb-4">
@@ -8305,7 +8328,7 @@ function TelaHistorico({ catalogo, setCatalogo, sessoes, setSessoes, abrirSessao
 /* =========================================================
    TELA: CONFIGURAÇÕES
 ========================================================= */
-function TelaConfig({ catalogo, setCatalogo, sessoes, setSessoes, setPrecoIaCache, apiKey, setApiKey, onAbrirConfigGeral }) {
+function TelaConfig({ catalogo, setCatalogo, sessoes, setSessoes, setPrecoIaCache, apiKey, setApiKey, onAbrirConfigGeral, onVoltarUmPasso }) {
   const [apiKeyTexto, setApiKeyTexto] = useState(apiKey || "");
   const [confirmar, setConfirmar] = useState(null);
 
@@ -8337,8 +8360,9 @@ function TelaConfig({ catalogo, setCatalogo, sessoes, setSessoes, setPrecoIaCach
   }
   return (
     <div className="h-full flex flex-col">
-      <div className="px-4 pt-3 pb-1.5 shrink-0">
-        <div className="font-bold text-stone-800 text-sm text-center">⚙️ Config — Mercado</div>
+      <div className="px-3 pt-2.5 pb-1.5 shrink-0 flex items-center gap-2">
+        <button onClick={onVoltarUmPasso} aria-label="Voltar" className="tap-target text-stone-500 text-lg shrink-0">←</button>
+        <div className="font-bold text-stone-800 text-sm">⚙️ Config — Mercado</div>
       </div>
       <div className="flex-1 overflow-y-auto p-4 pt-2 pb-6 space-y-4">
       {onAbrirConfigGeral && (
@@ -8476,14 +8500,15 @@ function AppMercado({ apiKey, setApiKey, onVoltarHub, onAbrirConfigGeral, arquiv
   );
 
   const temSessaoAtiva = sessoes.some((s) => s.status === "em_andamento");
+  /* Pedido do usuário: tirar a barra colorida de identidade do módulo — ela sozinha já ocupava
+     uma faixa inteira, redundante com a barra de navegação inferior (que já mostra "você está
+     no Mercado"). Cada aba agora mostra seu próprio "← + título", sem cor, fundido numa linha só
+     — a lógica de "um passo por vez" (aba interna -> Lista -> só depois Hub) continua a mesma,
+     só mudou de lugar. */
+  function voltarUmPasso() { if (aba !== "lista") mudarAba("lista"); else onVoltarHub(); }
 
   return (
     <div className="h-screen flex flex-col bg-stone-100 max-w-md mx-auto">
-      <div className="bg-emerald-800 text-white px-4 pt-3 pb-2.5 shrink-0 flex items-center gap-3">
-        <button onClick={() => (aba !== "lista" ? mudarAba("lista") : onVoltarHub())} aria-label={aba !== "lista" ? "Voltar pra Lista" : "Voltar ao início"} className="tap-target text-emerald-200 text-xl">←</button>
-        <div className="font-bold text-xl">🛒 Mercado</div>
-      </div>
-
       {erroCarregamento && (
         <div className="bg-red-600 text-white text-xs p-2 flex items-center justify-between gap-2 shrink-0">
           <span>⚠️ Alguns dados salvos não puderam ser lidos (parecem corrompidos). Você tem um backup pra importar?</span>
@@ -8503,11 +8528,11 @@ function AppMercado({ apiKey, setApiKey, onVoltarHub, onAbrirConfigGeral, arquiv
       )}
 
       <div className="flex-1 overflow-hidden">
-        {aba === "lista" && <TelaLista catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} onSessaoFinalizada={onSessaoFinalizada} sessaoEmCorrecaoId={sessaoEmCorrecao?.id || null} arquivoCompartilhado={arquivoCompartilhado} onUsarArquivoCompartilhado={onUsarArquivoCompartilhado} />}
-        {aba === "mercados" && <TelaMercados catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} />}
-        {aba === "produtos" && <TelaProdutos catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} />}
-        {aba === "historico" && <TelaHistorico catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} abrirSessaoId={sessaoParaAbrir} onAbriuAutomatico={() => setSessaoParaAbrir(null)} onReabriuParaCorrecao={() => setAba("lista")} />}
-        {aba === "config" && <TelaConfig catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} setApiKey={setApiKey} onAbrirConfigGeral={onAbrirConfigGeral} />}
+        {aba === "lista" && <TelaLista catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} onSessaoFinalizada={onSessaoFinalizada} sessaoEmCorrecaoId={sessaoEmCorrecao?.id || null} arquivoCompartilhado={arquivoCompartilhado} onUsarArquivoCompartilhado={onUsarArquivoCompartilhado} onVoltarUmPasso={voltarUmPasso} />}
+        {aba === "mercados" && <TelaMercados catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} onVoltarUmPasso={voltarUmPasso} />}
+        {aba === "produtos" && <TelaProdutos catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} onVoltarUmPasso={voltarUmPasso} />}
+        {aba === "historico" && <TelaHistorico catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} abrirSessaoId={sessaoParaAbrir} onAbriuAutomatico={() => setSessaoParaAbrir(null)} onReabriuParaCorrecao={() => setAba("lista")} onVoltarUmPasso={voltarUmPasso} />}
+        {aba === "config" && <TelaConfig catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} setApiKey={setApiKey} onAbrirConfigGeral={onAbrirConfigGeral} onVoltarUmPasso={voltarUmPasso} />}
       </div>
       <TabBarInterna aba={aba} setAba={mudarAba} temSessaoAtiva={temSessaoAtiva} restrito={emModoCorrecao} />
     </div>

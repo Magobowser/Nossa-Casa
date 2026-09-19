@@ -2688,7 +2688,7 @@ function ModalAvisosExtrato({ lembretesVencidos, pendentesCategorizacao, mesPass
   );
 }
 
-function TelaExtrato({ categorias, contas, lancamentos, documentos, onSalvarLancamento, onRemoverLancamento, lancamentosFixos, setLancamentosFixos, lembretes5Dias, limiar5Dias, onAdiar5Dias, onConfirmarLembrete, onDescartarLembrete, reflexoesMensais, onSalvarReflexao, metas, cartoes, gruposOrcamento, rendaManual, historicoAportes, financiamentos, onResolverPendente, onAnexarDocumento, onAnexarNotaColada, onVincularDocumentoExistente, onFotografarRecibo, onEditarNoMercado, onAbrirConfig }) {
+function TelaExtrato({ categorias, contas, lancamentos, documentos, onSalvarLancamento, onRemoverLancamento, lancamentosFixos, setLancamentosFixos, lembretes5Dias, limiar5Dias, onAdiar5Dias, onConfirmarLembrete, onDescartarLembrete, reflexoesMensais, onSalvarReflexao, metas, cartoes, gruposOrcamento, rendaManual, historicoAportes, financiamentos, onResolverPendente, onAnexarDocumento, onAnexarNotaColada, onVincularDocumentoExistente, onFotografarRecibo, onEditarNoMercado, onAbrirConfig, onVoltarUmPasso }) {
   const [chaveMes, setChaveMes] = useState(chaveMesAtual());
   const [subVisao, setSubVisao] = useState("lista");
   const [modalLancamento, setModalLancamento] = useState(null); // null | {} (novo) | item (editar)
@@ -2805,6 +2805,7 @@ function TelaExtrato({ categorias, contas, lancamentos, documentos, onSalvarLanc
     <div className="h-full flex flex-col" style={{ backgroundColor: "#faf8f2" }}>
       <div className="px-4 pt-3 pb-1 shrink-0">
         <div className="flex items-center gap-2 mb-2">
+          <button onClick={onVoltarUmPasso} aria-label="Voltar ao início" className="tap-target text-stone-500 text-lg shrink-0 -ml-1">←</button>
           <button onClick={() => setChaveMes(mesAnteriorDe(chaveMes))} aria-label="Mês anterior" className="tap-target text-emerald-700 font-bold px-1">◀</button>
           <div className="flex-1 text-center font-bold text-stone-800 text-sm">{nomeDaChaveMes(chaveMes)}</div>
           <button onClick={() => setChaveMes(mesSeguinte(chaveMes))} aria-label="Próximo mês" className="tap-target text-emerald-700 font-bold px-1">▶</button>
@@ -3082,7 +3083,7 @@ function ModalRelatorio({ contas, lancamentos, lancamentosFixos, metas, cartoes,
   );
 }
 
-function TelaConfigFinancas({ categorias, setCategorias, contas, setContas, lancamentos, lancamentosFixos, limiar5Dias, setLimiar5Dias, onImportarExtrato, onConciliar, onCorrigirSaldoInicial, onSalvarArquivoExtrato, gruposOrcamento, setGruposOrcamento, rendaManual, setRendaManual, metas, cartoes, pin, onSalvarPin, onRemoverPin }) {
+function TelaConfigFinancas({ categorias, setCategorias, contas, setContas, lancamentos, lancamentosFixos, limiar5Dias, setLimiar5Dias, onImportarExtrato, onConciliar, onCorrigirSaldoInicial, onSalvarArquivoExtrato, gruposOrcamento, setGruposOrcamento, rendaManual, setRendaManual, metas, cartoes, pin, onSalvarPin, onRemoverPin, onVoltarUmPasso }) {
   const [subaba, setSubaba] = useState("contas");
   const [formConta, setFormConta] = useState(null);
   const [formCategoria, setFormCategoria] = useState(null);
@@ -3130,7 +3131,9 @@ function TelaConfigFinancas({ categorias, setCategorias, contas, setContas, lanc
     <div className="h-full flex flex-col">
       <div className="px-4 pt-3 pb-1 shrink-0">
         <div className="flex items-center gap-2 mb-2">
+          <button onClick={onVoltarUmPasso} aria-label="Voltar" className="tap-target text-stone-500 text-lg shrink-0 -ml-1">←</button>
           <div className="flex-1 text-center font-bold text-stone-800 text-sm">⚙️ Config</div>
+          <span className="w-7 shrink-0" aria-hidden="true"></span>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-4 pt-0">
@@ -3640,7 +3643,7 @@ function GraficoBarraSimples({ dados, cor = "#065f46" }) {
   );
 }
 
-function TelaMetas({ metas, setMetas, contas, historicoAportes, onRegistrarAporte, onAporteComoDespesa, categorias, financiamentos, setFinanciamentos, historicoPagamentosFinanciamento, onRegistrarPagamentoFinanciamento, onPagamentoFinanciamentoComoDespesa }) {
+function TelaMetas({ metas, setMetas, contas, historicoAportes, onRegistrarAporte, onAporteComoDespesa, categorias, financiamentos, setFinanciamentos, historicoPagamentosFinanciamento, onRegistrarPagamentoFinanciamento, onPagamentoFinanciamentoComoDespesa, onVoltarUmPasso }) {
   const [subVisaoMetas, setSubVisaoMetas] = useState("metas"); // "metas" | "financiamentos"
   const [formMeta, setFormMeta] = useState(null);
   const [modalAporte, setModalAporte] = useState(null);
@@ -3713,7 +3716,9 @@ function TelaMetas({ metas, setMetas, contas, historicoAportes, onRegistrarAport
     <div className="h-full flex flex-col">
       <div className="px-4 pt-3 pb-1 shrink-0">
         <div className="flex items-center gap-2 mb-2">
+          <button onClick={onVoltarUmPasso} aria-label="Voltar" className="tap-target text-stone-500 text-lg shrink-0 -ml-1">←</button>
           <div className="flex-1 text-center font-bold text-stone-800 text-sm">🎯 Metas</div>
+          <span className="w-7 shrink-0" aria-hidden="true"></span>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-4 pt-0">
@@ -4277,7 +4282,7 @@ function ModalRenomearDocumento({ documento, onSalvar, onFechar }) {
     </div>
   );
 }
-function TelaDocumentos({ documentos, setDocumentos, lancamentos, onSalvarLancamento, categorias, contas, arquivoCompartilhado, onUsarArquivoCompartilhado, onImportarExtrato, onConciliar, onCorrigirSaldoInicial, onSalvarArquivoExtrato, onVincularDocumentoExistente }) {
+function TelaDocumentos({ documentos, setDocumentos, lancamentos, onSalvarLancamento, categorias, contas, arquivoCompartilhado, onUsarArquivoCompartilhado, onImportarExtrato, onConciliar, onCorrigirSaldoInicial, onSalvarArquivoExtrato, onVincularDocumentoExistente, onVoltarUmPasso }) {
   const [tipoDocumento, setTipoDocumento] = useState("todos");
   const [pastaSelecionada, setPastaSelecionada] = useState(null); // null = mostra as pastas; senão, o id da categoria aberta
   const [modalRenomear, setModalRenomear] = useState(null);
@@ -4380,7 +4385,9 @@ function TelaDocumentos({ documentos, setDocumentos, lancamentos, onSalvarLancam
     <div className="h-full flex flex-col">
       <div className="px-4 pt-3 pb-1 shrink-0">
         <div className="flex items-center gap-2 mb-2">
+          <button onClick={onVoltarUmPasso} aria-label="Voltar" className="tap-target text-stone-500 text-lg shrink-0 -ml-1">←</button>
           <div className="flex-1 text-center font-bold text-stone-800 text-sm">📄 Documentos</div>
+          <span className="w-7 shrink-0" aria-hidden="true"></span>
         </div>
       </div>
       <div className="px-4 pb-2 shrink-0">
@@ -4990,7 +4997,7 @@ function DetalheCartao({ cartao, lancamentos, categorias, onAnexarFatura, onVolt
 }
 
 /* ---------- TelaCartoes — Fase 7: lista de cartões + acesso ao detalhe ---------- */
-function TelaCartoes({ cartoes, setCartoes, lancamentos, categorias, onAnexarFatura }) {
+function TelaCartoes({ cartoes, setCartoes, lancamentos, categorias, onAnexarFatura, onVoltarUmPasso }) {
   const [formCartao, setFormCartao] = useState(null);
   const [cartaoAberto, setCartaoAberto] = useState(null);
   const [confirmar, setConfirmar] = useState(null);
@@ -5015,7 +5022,9 @@ function TelaCartoes({ cartoes, setCartoes, lancamentos, categorias, onAnexarFat
     <div className="h-full flex flex-col">
       <div className="px-4 pt-3 pb-1 shrink-0">
         <div className="flex items-center gap-2 mb-2">
+          <button onClick={onVoltarUmPasso} aria-label="Voltar" className="tap-target text-stone-500 text-lg shrink-0 -ml-1">←</button>
           <div className="flex-1 text-center font-bold text-stone-800 text-sm">💳 Cartões</div>
+          <span className="w-7 shrink-0" aria-hidden="true"></span>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-4 pt-0">
@@ -5274,13 +5283,11 @@ function AppFinancas({ apiKey, setApiKey, onVoltarHub, onEditarNoMercado, arquiv
     </div>
   );
 
+  /* Mesmo pedido do Mercado: tirar a barra colorida redundante com a navegação inferior. */
+  function voltarUmPasso() { if (aba !== "extrato") setAba("extrato"); else onVoltarHub(); }
+
   return (
     <div className="h-screen flex flex-col bg-stone-100 max-w-md mx-auto">
-      <div className="bg-emerald-800 text-white px-4 pt-3 pb-2.5 shrink-0 flex items-center gap-3">
-        <button onClick={() => (aba !== "extrato" ? setAba("extrato") : onVoltarHub())} aria-label={aba !== "extrato" ? "Voltar pro Extrato" : "Voltar ao início"} className="tap-target text-emerald-200 text-xl">←</button>
-        <div className="font-bold text-xl">💰 Finanças</div>
-      </div>
-
       {erroCarregamento && (
         <div className="bg-red-600 text-white text-xs p-2 shrink-0">⚠️ Alguns dados salvos não puderam ser lidos (parecem corrompidos).</div>
       )}
@@ -5307,6 +5314,7 @@ function AppFinancas({ apiKey, setApiKey, onVoltarHub, onEditarNoMercado, arquiv
             onFotografarRecibo={fotografarRecibo}
             onEditarNoMercado={onEditarNoMercado}
             onAbrirConfig={() => setAba("config")}
+            onVoltarUmPasso={onVoltarHub}
           />
         )}
         {aba === "metas" && (
@@ -5317,16 +5325,17 @@ function AppFinancas({ apiKey, setApiKey, onVoltarHub, onEditarNoMercado, arquiv
             historicoPagamentosFinanciamento={historicoPagamentosFinanciamento}
             onRegistrarPagamentoFinanciamento={(registro) => setHistoricoPagamentosFinanciamento((h) => [...h, registro])}
             onPagamentoFinanciamentoComoDespesa={salvarLancamentosComFixo}
+            onVoltarUmPasso={voltarUmPasso}
           />
         )}
         {aba === "cartoes" && (
-          <TelaCartoes cartoes={cartoes} setCartoes={setCartoes} lancamentos={lancamentos} categorias={categorias} onAnexarFatura={anexarFatura} />
+          <TelaCartoes cartoes={cartoes} setCartoes={setCartoes} lancamentos={lancamentos} categorias={categorias} onAnexarFatura={anexarFatura} onVoltarUmPasso={voltarUmPasso} />
         )}
         {aba === "documentos" && (
-          <TelaDocumentos documentos={documentos} setDocumentos={setDocumentos} lancamentos={lancamentos} onSalvarLancamento={salvarLancamentosComFixo} categorias={categorias} contas={contas} arquivoCompartilhado={arquivoCompartilhado} onUsarArquivoCompartilhado={onUsarArquivoCompartilhado} onImportarExtrato={importarTransacoes} onConciliar={marcarConciliados} onCorrigirSaldoInicial={corrigirSaldoInicial} onSalvarArquivoExtrato={salvarArquivoExtrato} onVincularDocumentoExistente={vincularDocumentoAoLancamento} />
+          <TelaDocumentos documentos={documentos} setDocumentos={setDocumentos} lancamentos={lancamentos} onSalvarLancamento={salvarLancamentosComFixo} categorias={categorias} contas={contas} arquivoCompartilhado={arquivoCompartilhado} onUsarArquivoCompartilhado={onUsarArquivoCompartilhado} onImportarExtrato={importarTransacoes} onConciliar={marcarConciliados} onCorrigirSaldoInicial={corrigirSaldoInicial} onSalvarArquivoExtrato={salvarArquivoExtrato} onVincularDocumentoExistente={vincularDocumentoAoLancamento} onVoltarUmPasso={voltarUmPasso} />
         )}
         {aba === "config" && (
-          <TelaConfigFinancas categorias={categorias} setCategorias={setCategorias} contas={contas} setContas={setContas} lancamentos={lancamentos} lancamentosFixos={lancamentosFixos} limiar5Dias={limiar5Dias} setLimiar5Dias={setLimiar5Dias} onImportarExtrato={importarTransacoes} onConciliar={marcarConciliados} onCorrigirSaldoInicial={corrigirSaldoInicial} onSalvarArquivoExtrato={salvarArquivoExtrato} gruposOrcamento={gruposOrcamento} setGruposOrcamento={setGruposOrcamento} rendaManual={rendaManual} setRendaManual={setRendaManual} metas={metas} cartoes={cartoes} pin={pin} onSalvarPin={(novoPin) => { try { localStorage.setItem("fn_pin", novoPin); } catch (e) {} setPin(novoPin); setDesbloqueado(true); }} onRemoverPin={() => { try { localStorage.removeItem("fn_pin"); } catch (e) {} setPin(null); }} />
+          <TelaConfigFinancas categorias={categorias} setCategorias={setCategorias} contas={contas} setContas={setContas} lancamentos={lancamentos} lancamentosFixos={lancamentosFixos} limiar5Dias={limiar5Dias} setLimiar5Dias={setLimiar5Dias} onImportarExtrato={importarTransacoes} onConciliar={marcarConciliados} onCorrigirSaldoInicial={corrigirSaldoInicial} onSalvarArquivoExtrato={salvarArquivoExtrato} gruposOrcamento={gruposOrcamento} setGruposOrcamento={setGruposOrcamento} rendaManual={rendaManual} setRendaManual={setRendaManual} metas={metas} cartoes={cartoes} pin={pin} onSalvarPin={(novoPin) => { try { localStorage.setItem("fn_pin", novoPin); } catch (e) {} setPin(novoPin); setDesbloqueado(true); }} onRemoverPin={() => { try { localStorage.removeItem("fn_pin"); } catch (e) {} setPin(null); }} onVoltarUmPasso={voltarUmPasso} />
         )}
       </div>
       <TabBarFinancas aba={aba} setAba={setAba} />

@@ -6674,15 +6674,15 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
                pra-editar (que continua igual) — pedido do usuário pra comparar os dois na prática
                antes de decidir qual fica. Pra kg/L, só o toque-pra-editar continua fazendo
                sentido (não dá pra "+1" um peso fracionado). */
-            <span className="flex items-center gap-1 shrink-0">
+            <span className="flex items-center gap-1.5 shrink-0">
               <button onClick={() => onAtualizarQuantidade(item, Math.max(1, item.quantidade - 1))} aria-label="Diminuir quantidade"
-                className="w-5 h-5 rounded-full border border-stone-300 flex items-center justify-center text-stone-500 text-xs leading-none p-2 -m-2">−</button>
+                className="w-6 h-6 rounded-full border border-stone-300 flex items-center justify-center text-stone-500 text-sm leading-none shrink-0">−</button>
               <button onClick={() => { setQtdEditavel(String(item.quantidade)); setEditandoQtd(true); }} aria-label="Tocar pra editar a quantidade"
-                className="font-mono2 underline decoration-dotted decoration-stone-300 shrink-0 py-1.5 -my-1.5">
+                className="font-mono2 underline decoration-dotted decoration-stone-300 shrink-0">
                 {variante?.tamanho_quantidade ? `${item.quantidade}× ${tamanhoDisplay(variante)}` : `${item.quantidade}${item.unidade}`}
               </button>
               <button onClick={() => onAtualizarQuantidade(item, item.quantidade + 1)} aria-label="Aumentar quantidade"
-                className="w-5 h-5 rounded-full border border-stone-300 flex items-center justify-center text-stone-500 text-xs leading-none p-2 -m-2">+</button>
+                className="w-6 h-6 rounded-full border border-stone-300 flex items-center justify-center text-stone-500 text-sm leading-none shrink-0">+</button>
             </span>
           ) : (
             <button onClick={() => { setQtdEditavel(String(item.quantidade)); setEditandoQtd(true); }} aria-label="Tocar pra editar a quantidade"
@@ -6709,11 +6709,11 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
             onToggleComprado(item);
           }}
           aria-label={item.comprado ? `Desmarcar ${produto?.nome} como comprado` : `Marcar ${produto?.nome} como comprado`}
-          className={`tap-target rounded-full border-2 flex items-center justify-center text-sm font-bold ${item.comprado ? "bg-emerald-600 border-emerald-600 text-white" : "border-stone-300 bg-white text-transparent"}`}>
+          className={`tap-target rounded-full flex items-center justify-center text-sm font-bold ${item.comprado ? "bg-emerald-600 text-white" : "border border-stone-300 text-transparent"}`}>
           ✓
         </button>
         <button onClick={() => onRemoverConfirmado(item)} aria-label={`Remover ${produto?.nome} da lista`}
-          className="tap-target rounded-full border-2 border-red-200 bg-white flex items-center justify-center text-sm">
+          className="tap-target flex items-center justify-center text-base text-red-400">
           🗑️
         </button>
       </div>

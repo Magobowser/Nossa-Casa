@@ -10,7 +10,18 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="./tailwind.css">
+<!-- Achado real do usuário: o app abria offline sem estilo nenhum, mesmo depois de uma correção
+     anterior no service worker. O Tailwind via CDN (cdn.tailwindcss.com) é um compilador que roda
+     no navegador e gera CSS na hora, olhando pras classes que aparecem na tela — depender de guardar
+     esse SCRIPT certinho pra uso offline (modo cors x no-cors, respostas opacas, etc.) se mostrou
+     frágil demais pra confiar. Resolvido de vez: gerado um CSS estático de verdade (tailwindcss
+     versão 3.4.19, mesma ferramenta, rodada uma vez aqui no ambiente de build, não no celular),
+     com exatamente as classes que o app usa — 331 confirmadas, nenhuma faltando. Isso vira um
+     arquivo comum do próprio app (`tailwind.css`), com o MESMO caminho de cache já testado e
+     confiável que index.html/mercado.js/financas.js usam (rede primeiro, cai pro que já foi salvo
+     se estiver offline) — não depende mais da parte frágil de cache de CDN de terceiro pra nada
+     relacionado a aparência visual. -->
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
@@ -93,7 +104,7 @@
 </script>
 
 <script>
-  window.VERSAO_APP = "2026.09.19-8"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
+  window.VERSAO_APP = "2026.09.20-1"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
 </script>
 
 <script>
@@ -1168,8 +1179,8 @@ function App() {
   return <>{avisoCompartilhado}<Hub onEntrar={setAbaPrincipal} /></>;
 }
 </script>
-<script type="text/babel" data-presets="react,env" src="./mercado.js?v=2026.09.19-8"></script>
-<script type="text/babel" data-presets="react,env" src="./financas.js?v=2026.09.19-8"></script>
+<script type="text/babel" data-presets="react,env" src="./mercado.js?v=2026.09.20-1"></script>
+<script type="text/babel" data-presets="react,env" src="./financas.js?v=2026.09.20-1"></script>
 <script type="text/babel" data-presets="react,env">
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>

@@ -17,20 +17,18 @@
    4) "Network-first" no nível do service worker não impedia o `fetch()` por baixo de ainda
       respeitar o cache HTTP normal do navegador (uma camada abaixo do SW). Adicionado
       `cache: "no-store"` explícito pra código próprio do app, fechando essa brecha.
-   v8: achado real relatado pelo usuário — app abre sem internet com a tela toda sem estilo
-   (Tailwind não carregou) e um erro visível, mesmo usando o app com internet quase todo dia.
-   Causa: uma tag <script src="..."> comum, o jeito que o Tailwind e as outras bibliotecas são
-   carregadas, faz o pedido no modo "no-cors" — mas cache.add(url) guarda no modo "cors" por
-   padrão. cdn.tailwindcss.com não manda os cabeçalhos de CORS que o modo "cors" exige, então
-   GUARDAR falhava toda vez — silenciosamente, escondido atrás de um .catch(() => {}) que existia
-   pra não travar a instalação por causa de UM arquivo problemático, mas que também escondeu esse
-   bug. Corrigido: arquivos de CDN agora são guardados explicitamente no modo "no-cors", igual o
-   pedido de verdade que a tag <script> faz — sem isso, nunca ficava nada usável salvo. */
+   v9: achado real do usuário — mesmo depois da v8, o app ainda abria offline sem estilo nenhum
+   (Tailwind não carregou), de novo. Em vez de continuar tentando acertar os detalhes finos de
+   cache de CDN de terceiro (modo cors x no-cors, respostas opacas — código correto no papel, mas
+   frágil e difícil de confirmar sem um celular real na mão), resolvido na raiz: o Tailwind agora
+   é um arquivo `tailwind.css` gerado uma vez (fora do celular, no ambiente de build) e servido
+   como parte do PRÓPRIO app — mesmo caminho de cache que já é confiável e testado pra
+   index.html/mercado.js/financas.js (rede primeiro, cai pro que já foi salvo se estiver offline).
+   Sai da lista de CDN, entra na lista local. */
 
-const CACHE_NAME = "nossa-casa-v8";
-const ARQUIVOS_LOCAIS = ["./", "./index.html", "./mercado.js", "./financas.js", "./manifest.json", "./icon-192.png", "./icon-512.png"];
+const CACHE_NAME = "nossa-casa-v9";
+const ARQUIVOS_LOCAIS = ["./", "./index.html", "./mercado.js", "./financas.js", "./tailwind.css", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 const ARQUIVOS_CDN = [
-  "https://cdn.tailwindcss.com",
   "https://unpkg.com/react@18/umd/react.production.min.js",
   "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
   "https://unpkg.com/@babel/standalone@7/babel.min.js",
@@ -128,7 +126,7 @@ self.addEventListener("fetch", (event) => {
     event.request.destination === "document" ||
     url.pathname.endsWith("/") ||
     url.pathname.endsWith("index.html") ||
-    (url.pathname.endsWith(".js") && url.origin === self.location.origin);
+    ((url.pathname.endsWith(".js") || url.pathname.endsWith(".css")) && url.origin === self.location.origin);
 
   if (ehCodigoProprioDoApp) {
     event.respondWith(

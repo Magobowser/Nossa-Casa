@@ -93,7 +93,7 @@
 </script>
 
 <script>
-  window.VERSAO_APP = "2026.09.05-4"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
+  window.VERSAO_APP = "2026.09.19-6"; // fonte única da versão — muda só aqui a cada entrega, um arquivo só
 </script>
 
 <script>
@@ -404,6 +404,34 @@ function carregarTesseract() {
   });
   return promessaTesseractCarregado;
 }
+/* Pedido do usuário: todas as funcionalidades devem já estar baixadas e prontas pra usar sem
+   internet desde a primeira abertura do app, não só na primeira vez que cada uma é usada. Em vez
+   de tentar adivinhar toda URL interna que Tesseract/pdf.js buscam por baixo (arriscado — muda
+   por versão da biblioteca e por navegador, sem testar contra o app de verdade rodando num
+   celular não dá pra ter certeza), essa função RODA cada biblioteca de verdade, escondida, uma
+   vez — isso faz cada uma buscar sozinha o que ela realmente precisa (núcleo, worker, dados de
+   idioma), e o service worker (que já guarda qualquer coisa que passa por ele, ver fetch handler
+   lá) guarda tudo automaticamente, sem eu precisar adivinhar nada. Só roda uma vez por versão do
+   app (guarda um marcador) e só quando online — sem internet não tem o que aquecer, e não faz
+   sentido repetir toda vez que o app abre. Se alguma falhar no meio (rede caiu), tenta de novo
+   na próxima abertura em vez de desistir de vez. */
+async function aquecerBibliotecasOffline() {
+  if (!navigator.onLine) return;
+  const chave = "nc_bibliotecas_aquecidas_" + VERSAO_APP;
+  try { if (localStorage.getItem(chave)) return; } catch (e) {}
+  const resultados = await Promise.allSettled([
+    carregarZxing(),
+    carregarPdfJs(),
+    carregarTesseract().then((Tesseract) => {
+      // Imagem mínima (1x1 png) só pra forçar a biblioteca a baixar o núcleo WASM e os dados do
+      // idioma de verdade — o resultado do OCR em si não importa nada aqui.
+      const imagemMinima = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+      return Tesseract.recognize(imagemMinima, "por");
+    }),
+  ]);
+  const todasOk = resultados.every((r) => r.status === "fulfilled");
+  if (todasOk) { try { localStorage.setItem(chave, "1"); } catch (e) {} }
+}
 /* Achado testando com uma foto de recibo real (maquininha Cielo): esse tipo de comprovante usa
    "VALOR" em vez de "TOTAL" — a versão original só procurava "total" e falhava nesses casos.
    TOTAL continua com prioridade (mais específico, menos ambíguo); VALOR entra como reserva, só
@@ -511,13 +539,47 @@ function Chip({ selected, onClick, children, ariaLabel }) {
    chama isso: `useFecharComVoltar(true, onFechar)` se for um componente próprio, ou
    `useFecharComVoltar(!!algumEstado, () => setAlgumEstado(null))` se for um bloco condicional
    dentro de uma tela maior. */
+/* Pedido do usuário: o botão/gesto de voltar do celular às vezes pulava telas inteiras, indo
+   direto pra Home em vez de voltar um passo. Causa raiz encontrada e confirmada por simulação:
+   no desenho antigo, cada tela/modal tinha SEU PRÓPRIO listener de popstate — se uma camada
+   fechava por outro motivo que não o botão de voltar (ex: tocar numa aba diferente, tocar fora
+   de um modal), a entrada de histórico que ela tinha empilhado nunca era consumida, ficava
+   "órfã". Um voltar seguinte, sem relação nenhuma com essa camada, acabava consumindo essa
+   entrada tardia — e como o listener dela já tinha sido removido, quem respondia era OUTRA
+   camada ainda ativa (geralmente uma mais externa, tipo o Hub), pulando telas.
+   Design novo: uma pilha só, do lado do JavaScript, que é a fonte da verdade de "o que o botão
+   de voltar deve fazer agora" — um único listener global consulta sempre o topo ATUAL dessa
+   pilha, nunca depende de qual entrada específica do histórico do navegador disparou o evento.
+   Cada camada continua empilhando sua própria entrada (senão o gesto de voltar do Android nem
+   chega a gerar um popstate), mas o que decide o que fazer é sempre a pilha, nunca a contagem
+   de entradas do navegador — por isso entradas "órfãs" deixam de importar. */
+const pilhaCamadasAbertas = [];
+let listenerGlobalDeVoltarRegistrado = false;
+function garantirListenerGlobalDeVoltar() {
+  if (listenerGlobalDeVoltarRegistrado) return;
+  listenerGlobalDeVoltarRegistrado = true;
+  window.addEventListener("popstate", () => {
+    const topo = pilhaCamadasAbertas[pilhaCamadasAbertas.length - 1];
+    if (topo) topo.onFechar();
+  });
+}
 function useFecharComVoltar(aberto, onFechar) {
+  const idRef = useRef(null);
+  const onFecharRef = useRef(onFechar);
+  onFecharRef.current = onFechar; // sempre a versão mais nova, sem precisar reabrir a camada
   useEffect(() => {
+    garantirListenerGlobalDeVoltar();
     if (!aberto) return;
+    const camada = { id: {}, onFechar: () => onFecharRef.current() };
+    idRef.current = camada.id;
+    pilhaCamadasAbertas.push(camada);
     window.history.pushState({ camadaNossaCasa: true }, "");
-    function aoVoltar() { onFechar(); }
-    window.addEventListener("popstate", aoVoltar);
-    return () => window.removeEventListener("popstate", aoVoltar);
+    return () => {
+      // Remove essa camada específica, não importa a posição na pilha — cobre exatamente o caso
+      // de fechar por outro motivo que não o botão de voltar, onde ela pode não estar mais no topo.
+      const idx = pilhaCamadasAbertas.findIndex((c) => c.id === idRef.current);
+      if (idx !== -1) pilhaCamadasAbertas.splice(idx, 1);
+    };
   }, [aberto]);
 }
 
@@ -1030,6 +1092,19 @@ function App() {
   const [apiKey, setApiKeyState] = useState("");
   const [arquivoCompartilhado, setArquivoCompartilhado] = useState(null);
   const [sessaoMercadoParaEditar, setSessaoMercadoParaEditar] = useState(null);
+  /* Pedido do usuário: um jeito claro de saber que está sem internet, em vez do app só se
+     comportar estranho silenciosamente. navigator.onLine nem sempre é 100% preciso (confirma só
+     que TEM uma rede, não que ela alcança a internet de verdade), mas é o sinal disponível sem
+     custo, e já ajuda bastante — os eventos online/offline disparam confiavelmente quando o
+     rádio do celular muda de estado. */
+  const [offline, setOffline] = useState(!navigator.onLine);
+  useEffect(() => {
+    const aoFicarOffline = () => setOffline(true);
+    const aoFicarOnline = () => setOffline(false);
+    window.addEventListener("offline", aoFicarOffline);
+    window.addEventListener("online", aoFicarOnline);
+    return () => { window.removeEventListener("offline", aoFicarOffline); window.removeEventListener("online", aoFicarOnline); };
+  }, []);
 
   /* Pedido do usuário: o botão/gesto de voltar do celular estava fechando o app inteiro em vez
      de navegar dentro dele — o hook useFecharComVoltar já existia e funcionava bem, mas só era
@@ -1046,14 +1121,19 @@ function App() {
     });
   }, []);
 
+  useEffect(() => {
+    if (pronto) aquecerBibliotecasOffline().catch(() => {});
+  }, [pronto]);
+
   function setApiKey(k) { setApiKeyState(k); localStorage.setItem("nc_apiKey", k); }
   function descartarArquivoCompartilhado() { limparArquivoCompartilhadoPendente(); setArquivoCompartilhado(null); }
 
   if (!pronto) return (
-    <div className="h-screen flex flex-col items-center justify-center bg-stone-100 text-stone-400 gap-2">
-      <div className="text-2xl">🧺</div>
-      <div>Verificando atualizações…</div>
-      <div className="text-xs font-mono2 text-stone-300">v{VERSAO_APP}</div>
+    <div className="h-screen flex flex-col items-center justify-center bg-stone-100 gap-3">
+      <div className="text-5xl animate-pulse">🧺</div>
+      <div className="text-lg font-bold text-stone-700">Nossa Casa</div>
+      <div className="text-xs text-stone-400">{offline ? "Sem conexão — abrindo com os dados salvos" : "Verificando atualizações…"}</div>
+      <div className="text-xs font-mono2 text-stone-300 mt-2">v{VERSAO_APP}</div>
     </div>
   );
 
@@ -1088,8 +1168,8 @@ function App() {
   return <>{avisoCompartilhado}<Hub onEntrar={setAbaPrincipal} /></>;
 }
 </script>
-<script type="text/babel" data-presets="react,env" src="./mercado.js?v=2026.09.05-4"></script>
-<script type="text/babel" data-presets="react,env" src="./financas.js?v=2026.09.05-4"></script>
+<script type="text/babel" data-presets="react,env" src="./mercado.js?v=2026.09.19-6"></script>
+<script type="text/babel" data-presets="react,env" src="./financas.js?v=2026.09.19-6"></script>
 <script type="text/babel" data-presets="react,env">
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>

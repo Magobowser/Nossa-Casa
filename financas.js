@@ -5268,15 +5268,16 @@ function AppFinancas({ apiKey, setApiKey, onVoltarHub, onEditarNoMercado, arquiv
   }
 
   if (loading || !categorias) return (
-    <div className="h-screen flex flex-col items-center justify-center bg-stone-100 text-stone-400 gap-2 max-w-md mx-auto">
-      <div>Carregando…</div>
+    <div className="h-screen flex flex-col items-center justify-center bg-stone-100 gap-2 max-w-md mx-auto">
+      <div className="text-4xl animate-pulse">💰</div>
+      <div className="text-sm text-stone-400">Carregando…</div>
     </div>
   );
 
   return (
     <div className="h-screen flex flex-col bg-stone-100 max-w-md mx-auto">
-      <div className="bg-emerald-800 text-white px-4 pt-4 pb-3 shrink-0 flex items-center gap-3">
-        <button onClick={onVoltarHub} aria-label="Voltar ao início" className="tap-target text-emerald-200 text-xl">←</button>
+      <div className="bg-emerald-800 text-white px-4 pt-3 pb-2.5 shrink-0 flex items-center gap-3">
+        <button onClick={() => (aba !== "extrato" ? setAba("extrato") : onVoltarHub())} aria-label={aba !== "extrato" ? "Voltar pro Extrato" : "Voltar ao início"} className="tap-target text-emerald-200 text-xl">←</button>
         <div className="font-bold text-xl">💰 Finanças</div>
       </div>
 

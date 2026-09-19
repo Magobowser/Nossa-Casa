@@ -5006,6 +5006,68 @@ function ModalMudarUnidade({ unidadeAtual, nomeProduto, onEscolher, onFechar }) 
     </div>
   );
 }
+/* Etapa sobre criar variante rápida: pedido do usuário — quando o produto já existe mas não tem
+   a marca/tamanho que você quer, não devia precisar passar pelo cadastro completo de novo
+   (nome, categoria, etc. já estão decididos, só falta marca+tamanho). Usada em 2 gatilhos: o "+"
+   no card do produto durante a busca, e o botão "Adicionar como variante" no aviso de
+   duplicidade — mesma lógica, dois pontos de entrada. */
+function ModalCriarVarianteRapida({ produto, catalogo, setCatalogo, onCriado, onFechar }) {
+  const [marcaId, setMarcaId] = useState(null);
+  const [marcaFavorita, setMarcaFavorita] = useState(false);
+  const [tamanhoQuantidade, setTamanhoQuantidade] = useState("");
+  const [tamanhoUnidade, setTamanhoUnidade] = useState("un");
+  const [tamanhoTexto, setTamanhoTexto] = useState("");
+  const [codigoBarras, setCodigoBarras] = useState("");
+
+  function criarMarca(novoNome) {
+    const novaMarca = { id: uid(), nome: novoNome };
+    setCatalogo((c) => ({ ...c, marcas: [...c.marcas, novaMarca] }));
+    setMarcaId(novaMarca.id);
+  }
+
+  function criar() {
+    const qtdNum = tamanhoQuantidade === "" ? null : parseFloat(tamanhoQuantidade);
+    const novaVariante = {
+      id: uid(), produto_id: produto.id, marca_id: marcaId, tamanho: tamanhoTexto,
+      tamanho_quantidade: qtdNum, tamanho_unidade: qtdNum ? tamanhoUnidade : null, codigo_barras: codigoBarras,
+      descricao_variante: "", foto: null, tabela_nutricional: null, favorita: marcaFavorita, observacao: "",
+    };
+    setCatalogo((c) => ({ ...c, variantes: [...c.variantes, novaVariante] }));
+    onCriado(novaVariante.id);
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[85]" onClick={onFechar}>
+      <div className="bg-white rounded-t-2xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-lg font-bold mb-1">Nova variante</h3>
+        <p className="text-xs text-stone-500 mb-3">de "{produto.nome}" — só marca e tamanho, o resto já está definido.</p>
+        <SeletorBusca label="Marca" opcoes={catalogo.marcas} valorId={marcaId} onSelecionar={setMarcaId} permitirNenhum nenhumLabel="genérico" onCriarNovo={criarMarca} labelCriar="marca" />
+        {marcaId && (
+          <label className="flex items-center gap-2 text-sm text-stone-700 tap-target mt-2">
+            <input type="checkbox" checked={marcaFavorita} onChange={(e) => setMarcaFavorita(e.target.checked)} className="w-5 h-5" />
+            ⭐ Marca favorita (aparece primeiro nas buscas)
+          </label>
+        )}
+        <div className="grid grid-cols-2 gap-2 mt-3">
+          <div>
+            <label className="text-xs font-semibold text-stone-500 uppercase">Quantidade</label>
+            <input type="number" step="0.01" value={tamanhoQuantidade} onChange={(e) => setTamanhoQuantidade(e.target.value)} className="w-full border border-stone-300 rounded-lg p-2.5 mt-1 font-mono2" placeholder="0.9" />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-stone-500 uppercase">Unidade</label>
+            <div className="flex gap-1 mt-1">{["kg", "l", "un"].map((u) => <Chip key={u} selected={tamanhoUnidade === u} onClick={() => setTamanhoUnidade(u)}>{u}</Chip>)}</div>
+          </div>
+        </div>
+        <input value={tamanhoTexto} onChange={(e) => setTamanhoTexto(e.target.value)} placeholder={tamanhoQuantidade ? `auto: ${tamanhoQuantidade}${tamanhoUnidade}` : "Tamanho em texto (opcional)"} className="w-full border border-stone-300 rounded-lg p-2.5 mt-2" />
+        <input value={codigoBarras} onChange={(e) => setCodigoBarras(e.target.value)} placeholder="Código de barras (opcional)" className="w-full border border-stone-300 rounded-lg p-2.5 mt-2 font-mono2 text-sm" />
+        <div className="flex gap-2 mt-4">
+          <button onClick={onFechar} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
+          <button onClick={criar} className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target">Criar variante</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function SeletorBusca({ label, opcoes, valorId, onSelecionar, permitirNenhum, nenhumLabel, onCriarNovo, labelCriar }) {
   const [aberto, setAberto] = useState(false);
   const [busca, setBusca] = useState("");
@@ -5204,13 +5266,13 @@ function TelaMercados({ catalogo, setCatalogo, sessoes }) {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-4 pb-6">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-2xl font-bold text-emerald-900">Mercados</h2>
+    <div className="h-full flex flex-col">
+      <div className="px-4 pt-3 pb-1.5 shrink-0 flex items-center justify-between">
+        <div className="font-bold text-stone-800 text-sm">🏬 Mercados</div>
         <button onClick={() => setForm({ nome: "", razao_social: "", cnpj: "", telefone: "", cor: CORES_MERCADO[0], endereco: "", ativo: true, ordem_categorias: [] })}
-          className="flex items-center gap-1 bg-emerald-700 text-white text-sm font-semibold px-3 py-2 rounded-lg tap-target">+ Novo</button>
+          className="flex items-center gap-1 bg-emerald-700 text-white text-xs font-semibold px-2.5 py-1.5 rounded-lg tap-target">+ Novo</button>
       </div>
-      <div className="space-y-2">
+      <div className="flex-1 overflow-y-auto p-4 pt-2 pb-6">      <div className="space-y-2">
         {catalogo.mercados.map((m) => (
           <div key={m.id} className={`bg-white border border-stone-200 rounded-xl p-3 flex items-center justify-between ${!m.ativo ? "opacity-40" : ""}`}>
             <div className="flex items-center gap-3 min-w-0">
@@ -5297,6 +5359,7 @@ function TelaMercados({ catalogo, setCatalogo, sessoes }) {
           </div>
         </div>
       )}
+      </div>
 
       {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
     </div>
@@ -5316,6 +5379,7 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
   const [formMarca, setFormMarca] = useState(null);
   const [formCategoria, setFormCategoria] = useState(null);
   const [avisoDuplicataProduto, setAvisoDuplicataProduto] = useState(null);
+  const [criandoVarianteDeParecido, setCriandoVarianteDeParecido] = useState(null);
   const [avisoDuplicataMarca, setAvisoDuplicataMarca] = useState(null);
   const [historicoVarianteId, setHistoricoVarianteId] = useState(null);
   const [atualizando, setAtualizando] = useState(null);
@@ -5462,8 +5526,11 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
   }
 
   return (
-    <div className="h-full overflow-y-auto p-4 pb-6">
-      <h2 className="text-2xl font-bold text-emerald-900 mb-3">Produtos</h2>
+    <div className="h-full flex flex-col">
+      <div className="px-4 pt-3 pb-1.5 shrink-0">
+        <div className="font-bold text-stone-800 text-sm text-center">📦 Produtos</div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 pt-2 pb-6">
       <div className="flex gap-2 mb-4">
         <Chip selected={subaba === "produtos"} onClick={() => setSubaba("produtos")}>Produtos</Chip>
         <Chip selected={subaba === "marcas"} onClick={() => setSubaba("marcas")}>Marcas</Chip>
@@ -5616,10 +5683,25 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
         </div>
       )}
       {avisoDuplicataProduto && (
-        <ModalConfirmar titulo="Já existe um produto parecido" severo={false}
-          mensagem={`Já tem "${avisoDuplicataProduto.nome}" cadastrado. Criar "${formProduto?.nome}" mesmo assim, ou cancelar e usar o que já existe?`}
-          textoConfirmar="Criar mesmo assim" textoCancelar="Cancelar"
-          onConfirmar={salvarProduto} onCancelar={() => setAvisoDuplicataProduto(null)} />
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[70] p-4" onClick={() => setAvisoDuplicataProduto(null)}>
+          <div className="bg-white rounded-2xl w-full max-w-sm p-5" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold mb-2 text-stone-800">Já existe um produto parecido</h3>
+            <p className="text-sm text-stone-600 mb-4">Já tem "{avisoDuplicataProduto.nome}" cadastrado. Se "{formProduto?.nome}" é só uma marca ou tamanho diferente dele, adicionar como variante é mais rápido do que cadastrar tudo de novo.</p>
+            {/* Etapa sobre criar variante rápida: essa terceira opção existe porque, na prática, o
+                motivo mais comum de bater nesse aviso é a pessoa tentando cadastrar uma marca/sabor
+                novo de algo que já existe — não um produto genuinamente duplicado. */}
+            <button onClick={() => { setCriandoVarianteDeParecido(avisoDuplicataProduto); setAvisoDuplicataProduto(null); setFormProduto(null); }}
+              className="w-full py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target mb-2">Adicionar como variante desse</button>
+            <div className="flex gap-2">
+              <button onClick={() => setAvisoDuplicataProduto(null)} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
+              <button onClick={salvarProduto} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Criar mesmo assim</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {criandoVarianteDeParecido && (
+        <ModalCriarVarianteRapida produto={criandoVarianteDeParecido} catalogo={catalogo} setCatalogo={setCatalogo}
+          onCriado={() => setCriandoVarianteDeParecido(null)} onFechar={() => setCriandoVarianteDeParecido(null)} />
       )}
 
       {formVariante && <FormVariante catalogo={catalogo} variante={formVariante} setVariante={setFormVariante} sessoes={sessoes} onSalvar={salvarVariante} onFechar={() => setFormVariante(null)} onVerHistorico={() => { setHistoricoVarianteId(formVariante.id); setFormVariante(null); }}
@@ -5670,6 +5752,7 @@ function TelaProdutos({ catalogo, setCatalogo, sessoes, precoIaCache, setPrecoIa
           </div>
         </div>
       )}
+      </div>
 
       {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
     </div>
@@ -5932,12 +6015,26 @@ function TelaHistoricoVariante({ varianteId, catalogo, sessoes, precoIaCache, on
 /* =========================================================
    MODAL: NOVA SESSÃO
 ========================================================= */
-function ModalNovaSessao({ catalogo, sessoes, setSessoes, onCriada, onClose }) {
+function ModalNovaSessao({ catalogo, setCatalogo, sessoes, setSessoes, onCriada, onClose }) {
   useFecharComVoltar(true, onClose);
   const ativos = catalogo.mercados.filter((m) => m.ativo);
   const [escolhido, setEscolhido] = useState(null);
   const [orcamentoTexto, setOrcamentoTexto] = useState("");
+  /* Etapa sobre padronizar: mesma fricção que já resolvemos em outros lugares (criar variante
+     sem sair do fluxo, criar item já vinculado à nota) — aqui ainda mandava a pessoa pra outra
+     aba só pra cadastrar o primeiro mercado. Cria ali mesmo, sem sair do modal. */
+  const [criandoMercado, setCriandoMercado] = useState(false);
+  const [novoNomeMercado, setNovoNomeMercado] = useState("");
+  const [novaCorMercado, setNovaCorMercado] = useState(CORES_MERCADO[0]);
   const temUltima = escolhido && sessoes.some((s) => s.status === "fechada" && s.mercado_id === escolhido);
+  function criarMercado() {
+    if (!novoNomeMercado.trim()) return;
+    const novoId = uid();
+    setCatalogo((c) => ({ ...c, mercados: [...c.mercados, { id: novoId, nome: novoNomeMercado.trim(), razao_social: "", cnpj: "", telefone: "", cor: novaCorMercado, endereco: "", ativo: true, ordem_categorias: [] }] }));
+    setEscolhido(novoId);
+    setCriandoMercado(false);
+    setNovoNomeMercado("");
+  }
   function iniciar(mercadoId, repetir) {
     let itens = [];
     if (repetir) {
@@ -5954,7 +6051,7 @@ function ModalNovaSessao({ catalogo, sessoes, setSessoes, onCriada, onClose }) {
     <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-50" onClick={onClose}>
       <div className="bg-white rounded-t-2xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
         <h3 className="text-lg font-bold mb-3">Onde você vai comprar?</h3>
-        {!ativos.length && <p className="text-sm text-stone-500 mb-3">Cadastre um mercado primeiro, na aba Mercados.</p>}
+        {!ativos.length && !criandoMercado && <p className="text-sm text-stone-500 mb-3">Nenhum mercado cadastrado ainda.</p>}
         <div className="space-y-2 mb-4">
           {ativos.map((m) => (
             <button key={m.id} onClick={() => setEscolhido(m.id)} className={`w-full flex items-center gap-3 p-3 rounded-xl border tap-target ${escolhido === m.id ? "border-emerald-700 bg-emerald-50" : "border-stone-200"}`}>
@@ -5962,10 +6059,28 @@ function ModalNovaSessao({ catalogo, sessoes, setSessoes, onCriada, onClose }) {
             </button>
           ))}
         </div>
+        {criandoMercado ? (
+          <div className="border border-stone-200 rounded-xl p-3 mb-4">
+            <label className="text-xs font-semibold text-stone-500 uppercase">Nome do mercado</label>
+            <input autoFocus value={novoNomeMercado} onChange={(e) => setNovoNomeMercado(e.target.value)} className="w-full border border-stone-300 rounded-lg p-2.5 mt-1 mb-2" placeholder="Ex: Rio Sul" />
+            <div className="flex gap-1.5 mb-3">{CORES_MERCADO.map((cor) => (
+              <button key={cor} onClick={() => setNovaCorMercado(cor)} aria-label={`Cor ${cor}`} className={`w-7 h-7 rounded-full tap-target ${novaCorMercado === cor ? "ring-2 ring-offset-1 ring-stone-400" : ""}`} style={{ backgroundColor: cor }} />
+            ))}</div>
+            <div className="flex gap-2">
+              <button onClick={() => setCriandoMercado(false)} className="flex-1 py-2 rounded-lg border border-stone-300 text-stone-600 text-sm font-semibold tap-target">Cancelar</button>
+              <button onClick={criarMercado} className="flex-1 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold tap-target">Criar</button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={() => setCriandoMercado(true)} className="text-sm text-emerald-700 font-semibold underline mb-4 block tap-target">+ Cadastrar mercado</button>
+        )}
         {escolhido && (
           <div className="space-y-3">
             <div>
-              <label className="text-xs font-semibold text-stone-500 uppercase">Orçamento pra essa compra (opcional)</label>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-stone-500 uppercase">Orçamento pra essa compra (opcional)</label>
+                <span className="text-[10px] text-stone-400 font-mono2 bg-stone-100 rounded px-1.5 py-0.5 shrink-0">30000→R$300,00</span>
+              </div>
               <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5 mt-1">
                 <span className="text-stone-400 font-mono2">R$</span>
                 <input value={orcamentoTexto} onChange={(e) => setOrcamentoTexto(sanitizarEntradaPreco(e.target.value))} placeholder="ex: 30000 = R$300,00" className="font-mono2 font-bold flex-1 outline-none" aria-label="Orçamento da compra" />
@@ -5986,11 +6101,12 @@ function ModalNovaSessao({ catalogo, sessoes, setSessoes, onCriada, onClose }) {
 /* =========================================================
    FORMULÁRIO ENXUTO: cadastrar item novo sem sair da lista (seção 22.7)
 ========================================================= */
-function FormNovoItemRapido({ catalogo, setCatalogo, codigoBarrasInicial, onCriado, onCancelar }) {
-  const [nome, setNome] = useState("");
+function FormNovoItemRapido({ catalogo, setCatalogo, codigoBarrasInicial, nomeInicial, onCriado, onCancelar, onQuerCriarVariante }) {
+  const [nome, setNome] = useState(nomeInicial ? nomeInicial.trim() : "");
   const [categoriaId, setCategoriaId] = useState(catalogo.categorias[0]?.id || "");
   const [unidadePadrao, setUnidadePadrao] = useState("un");
   const [marcaId, setMarcaId] = useState(null);
+  const [marcaFavorita, setMarcaFavorita] = useState(false);
   const [tamanhoQuantidade, setTamanhoQuantidade] = useState("");
   const [tamanhoUnidade, setTamanhoUnidade] = useState("un");
   const [tamanhoTexto, setTamanhoTexto] = useState("");
@@ -6023,9 +6139,9 @@ function FormNovoItemRapido({ catalogo, setCatalogo, codigoBarrasInicial, onCria
     const categoria = by(catalogo.categorias, categoriaId);
     const qtdNum = tamanhoQuantidade === "" ? null : parseFloat(tamanhoQuantidade);
     const novoProduto = { id: uid(), nome: nome.trim(), descricao: "", categoria_id: categoriaId, unidade_padrao: unidadePadrao };
-    const novaVariante = { id: uid(), produto_id: novoProduto.id, marca_id: marcaId, tamanho: tamanhoTexto, tamanho_quantidade: qtdNum, tamanho_unidade: qtdNum ? tamanhoUnidade : null, codigo_barras: codigoBarras, descricao_variante: "", foto: null, tabela_nutricional: null, favorita: false, observacao: "" };
+    const novaVariante = { id: uid(), produto_id: novoProduto.id, marca_id: marcaId, tamanho: tamanhoTexto, tamanho_quantidade: qtdNum, tamanho_unidade: qtdNum ? tamanhoUnidade : null, codigo_barras: codigoBarras, descricao_variante: "", foto: null, tabela_nutricional: null, favorita: marcaFavorita, observacao: "" };
     setCatalogo((c) => ({ ...c, produtos: [...c.produtos, novoProduto], variantes: [...c.variantes, novaVariante] }));
-    onCriado(novaVariante.id);
+    onCriado(novaVariante.id, unidadePadrao);
   }
 
   return (
@@ -6040,6 +6156,12 @@ function FormNovoItemRapido({ catalogo, setCatalogo, codigoBarrasInicial, onCria
         <div className="flex gap-1.5 mt-1">{["kg", "l", "un", "pacote"].map((u) => <Chip key={u} selected={unidadePadrao === u} onClick={() => setUnidadePadrao(u)}>{u}</Chip>)}</div>
       </div>
       <SeletorBusca label={null} opcoes={catalogo.marcas} valorId={marcaId} onSelecionar={setMarcaId} permitirNenhum nenhumLabel="Marca (opcional)" onCriarNovo={criarMarca} labelCriar="marca" />
+      {marcaId && (
+        <label className="flex items-center gap-2 text-sm text-stone-700 tap-target">
+          <input type="checkbox" checked={marcaFavorita} onChange={(e) => setMarcaFavorita(e.target.checked)} className="w-5 h-5" />
+          ⭐ Marca favorita (aparece primeiro nas buscas)
+        </label>
+      )}
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label className="text-xs font-semibold text-stone-500 uppercase">Quantidade (opcional)</label>
@@ -6069,10 +6191,18 @@ function FormNovoItemRapido({ catalogo, setCatalogo, codigoBarrasInicial, onCria
           onCancelar={() => { setMarcaId(avisoMarcaParecida.existente.id); setAvisoMarcaParecida(null); }} />
       )}
       {avisoProdutoParecido && (
-        <ModalConfirmar titulo="Já existe um produto parecido" severo={false}
-          mensagem={`Já tem "${avisoProdutoParecido.nome}" cadastrado. Criar "${nome}" mesmo assim, ou cancelar e buscar o que já existe?`}
-          textoConfirmar="Criar mesmo assim" textoCancelar="Cancelar"
-          onConfirmar={() => { salvar(); }} onCancelar={() => setAvisoProdutoParecido(null)} />
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[70] p-4" onClick={() => setAvisoProdutoParecido(null)}>
+          <div className="bg-white rounded-2xl w-full max-w-sm p-5" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold mb-2 text-stone-800">Já existe um produto parecido</h3>
+            <p className="text-sm text-stone-600 mb-4">Já tem "{avisoProdutoParecido.nome}" cadastrado. Se "{nome}" é só uma marca ou tamanho diferente dele, adicionar como variante é mais rápido.</p>
+            <button onClick={() => { onQuerCriarVariante(avisoProdutoParecido); setAvisoProdutoParecido(null); }}
+              className="w-full py-2.5 rounded-lg bg-emerald-700 text-white font-semibold tap-target mb-2">Adicionar como variante desse</button>
+            <div className="flex gap-2">
+              <button onClick={() => setAvisoProdutoParecido(null)} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Cancelar</button>
+              <button onClick={() => { salvar(); }} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-semibold text-stone-600 tap-target">Criar mesmo assim</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -6127,11 +6257,29 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
   const [busca, setBusca] = useState("");
   const [categoriaFiltro, setCategoriaFiltro] = useState(null);
   const [categoriasExpandidas, setCategoriasExpandidas] = useState(false); // Etapa sobre filtro de categoria colapsável
+  const [favoritosApenas, setFavoritosApenas] = useState(false);
+  /* Etapa sobre buscas recentes: inspirado no app de consulta de preço que o usuário mostrou —
+     guarda os últimos termos buscados (não itens, os TERMOS digitados) no localStorage, pra
+     persistir entre sessões. Só grava quando a busca de fato levou a escolher algo (não a cada
+     tecla), pra não virar uma lista de fragmentos de digitação. */
+  const [buscasRecentes, setBuscasRecentes] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("nc_buscas_recentes_mercado") || "[]"); } catch (e) { return []; }
+  });
+  function registrarBuscaRecente(termo) {
+    const limpo = termo.trim();
+    if (!limpo) return;
+    setBuscasRecentes((atual) => {
+      const nova = [limpo, ...atual.filter((t) => normalizar(t) !== normalizar(limpo))].slice(0, 8);
+      try { localStorage.setItem("nc_buscas_recentes_mercado", JSON.stringify(nova)); } catch (e) {}
+      return nova;
+    });
+  }
   const [varianteId, setVarianteId] = useState(null);
   const [escaneando, setEscaneando] = useState(false);
   useFecharComVoltar(true, onClose);
   useFecharComVoltar(!!varianteId, () => setVarianteId(null));
   const [criandoNovo, setCriandoNovo] = useState(false);
+  const [criandoVarianteDe, setCriandoVarianteDe] = useState(null); // produto recebendo uma variante rápida (Etapa sobre criar variante rápida)
   const [quantidade, setQuantidade] = useState(1);
   const [trocandoUnidade, setTrocandoUnidade] = useState(false);
   const [unidade, setUnidade] = useState("un");
@@ -6146,6 +6294,7 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
       setCatalogo((c) => ({ ...c, variantes: c.variantes.map((v) => (v.id === vId ? { ...v, codigo_barras: codigoParaAnexar } : v)) }));
       setCodigoParaAnexar(null);
     }
+    if (busca.trim()) registrarBuscaRecente(busca);
     setVarianteId(vId); setQuantidade(1); setPrecoTexto(""); setCriandoNovo(false); setPromocaoAtual(null);
   }
 
@@ -6190,7 +6339,8 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
       if (busca.trim() && !texto.includes(normalizar(busca))) return false;
       return true;
     })
-    .filter(({ produto }) => !categoriaFiltro || produto.categoria_id === categoriaFiltro);
+    .filter(({ produto }) => !categoriaFiltro || produto.categoria_id === categoriaFiltro)
+    .filter(({ v }) => !favoritosApenas || v.favorita);
 
   /* Agrupa por produto+marca — pra tamanhos diferentes do mesmo item (ex: Nescau 350g/950g)
      aparecerem juntos num só cartão, em vez de linhas soltas repetindo produto+marca. */
@@ -6271,14 +6421,37 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
             </div>
           )}
 
-          {!categoriasExpandidas ? (
-            <button onClick={() => setCategoriasExpandidas(true)} className="flex items-center gap-1.5 text-sm text-stone-600 border border-stone-300 rounded-lg px-3 py-2 tap-target">
-              {categoriaFiltro ? (() => { const c = by(catalogo.categorias, categoriaFiltro); return `${c?.icone || ""} ${c?.nome || ""}`; })() : "🏷️ Filtrar categoria"} <span className="text-stone-400">▾</span>
-            </button>
-          ) : (
-            <div className="flex gap-2 overflow-x-auto pb-1">
-              <Chip selected={!categoriaFiltro} onClick={() => { setCategoriaFiltro(null); setCategoriasExpandidas(false); }}>Todas</Chip>
-              {catalogo.categorias.map((c) => <Chip key={c.id} selected={categoriaFiltro === c.id} onClick={() => { setCategoriaFiltro(categoriaFiltro === c.id ? null : c.id); setCategoriasExpandidas(false); }}>{c.icone} {c.nome}</Chip>)}
+          <div className="flex items-center gap-2">
+            {!categoriasExpandidas ? (
+              <button onClick={() => setCategoriasExpandidas(true)} className="flex items-center gap-1.5 text-sm text-stone-600 border border-stone-300 rounded-lg px-3 py-2 tap-target">
+                {categoriaFiltro ? (() => { const c = by(catalogo.categorias, categoriaFiltro); return `${c?.icone || ""} ${c?.nome || ""}`; })() : "🏷️ Filtrar categoria"} <span className="text-stone-400">▾</span>
+              </button>
+            ) : (
+              <div className="flex gap-2 overflow-x-auto pb-1 flex-1">
+                <Chip selected={!categoriaFiltro} onClick={() => { setCategoriaFiltro(null); setCategoriasExpandidas(false); }}>Todas</Chip>
+                {catalogo.categorias.map((c) => <Chip key={c.id} selected={categoriaFiltro === c.id} onClick={() => { setCategoriaFiltro(categoriaFiltro === c.id ? null : c.id); setCategoriasExpandidas(false); }}>{c.icone} {c.nome}</Chip>)}
+              </div>
+            )}
+            {/* Etapa sobre favoritos: inspirado no app de consulta de preço que o usuário mostrou —
+                filtra pra só os itens com marca marcada como favorita (⭐), em vez de precisar
+                rolar procurando o símbolo no meio da lista inteira. */}
+            {!categoriasExpandidas && (
+              <button onClick={() => setFavoritosApenas((v) => !v)} aria-label="Mostrar só favoritos"
+                className={`shrink-0 text-sm border rounded-lg px-3 py-2 tap-target ${favoritosApenas ? "border-amber-400 bg-amber-50 text-amber-700" : "border-stone-300 text-stone-600"}`}>
+                ⭐
+              </button>
+            )}
+          </div>
+
+          {!busca.trim() && !categoriaFiltro && !criandoNovo && !!buscasRecentes.length && (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold text-stone-400 uppercase">Buscas recentes</div>
+                <button onClick={() => { setBuscasRecentes([]); try { localStorage.removeItem("nc_buscas_recentes_mercado"); } catch (e) {} }} className="text-xs text-stone-400 underline tap-target">Limpar</button>
+              </div>
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {buscasRecentes.map((termo) => <Chip key={termo} onClick={() => setBusca(termo)}><span className="whitespace-nowrap">{termo}</span></Chip>)}
+              </div>
             </div>
           )}
 
@@ -6304,7 +6477,10 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
                   <div key={grupo.produto.id + "::" + (grupo.marca?.id || "generico")} className="bg-white border border-stone-200 rounded-lg p-3">
                     <div className="flex items-center justify-between mb-1">
                       <div className="font-semibold text-stone-800 text-sm truncate">{temFavorita && "⭐ "}{grupo.produto.nome}</div>
-                      <span className="text-xs text-stone-400 shrink-0">{grupo.categoria?.icone}</span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-xs text-stone-400">{grupo.categoria?.icone}</span>
+                        <button onClick={() => setCriandoVarianteDe(grupo.produto)} aria-label={`Nova marca ou tamanho de ${grupo.produto.nome}`} className="text-white text-sm font-bold bg-emerald-600 rounded-full w-6 h-6 flex items-center justify-center p-2 -m-2 shrink-0">+</button>
+                      </div>
                     </div>
                     <div className="text-xs text-stone-500 mb-2">{grupo.marca?.nome || "genérico"}</div>
                     <div className="flex gap-1.5 flex-wrap">
@@ -6318,14 +6494,27 @@ function ModalAdicionarItem({ catalogo, setCatalogo, sessoes, sessaoAtiva, preco
                   </div>
                 );
               })}
-              {!gruposFiltrados.length && <p className="text-stone-400 text-sm text-center py-6">Nada encontrado. Toca em "+ Cadastrar item novo" abaixo pra criar.</p>}
+              {!gruposFiltrados.length && (
+                <p className="text-stone-400 text-sm text-center py-6">
+                  {favoritosApenas
+                    ? "Nenhum favorito ainda. Marca uma marca como favorita no editor do produto (aba Produtos) pra ela aparecer aqui."
+                    : 'Nada encontrado. Toca em "+ Cadastrar item novo" abaixo pra criar.'}
+                </p>
+              )}
             </div>
+          )}
+
+          {criandoVarianteDe && (
+            <ModalCriarVarianteRapida produto={criandoVarianteDe} catalogo={catalogo} setCatalogo={setCatalogo}
+              onCriado={(varianteId) => { setCriandoVarianteDe(null); escolherVariante(varianteId); }}
+              onFechar={() => setCriandoVarianteDe(null)} />
           )}
 
           {/* Etapa sobre o botão de criar item competir com a busca: desce pra depois dos
               resultados — só compete por atenção quando você já olhou e não achou, não antes. */}
           {criandoNovo ? (
-            <FormNovoItemRapido catalogo={catalogo} setCatalogo={setCatalogo} codigoBarrasInicial={codigoParaNovoItem} onCriado={escolherVariante} onCancelar={() => { setCriandoNovo(false); setCodigoParaNovoItem(null); }} />
+            <FormNovoItemRapido catalogo={catalogo} setCatalogo={setCatalogo} codigoBarrasInicial={codigoParaNovoItem} nomeInicial={busca} onCriado={escolherVariante} onCancelar={() => { setCriandoNovo(false); setCodigoParaNovoItem(null); }}
+              onQuerCriarVariante={(produto) => { setCriandoNovo(false); setCodigoParaNovoItem(null); setCriandoVarianteDe(produto); }} />
           ) : (
             <button onClick={() => setCriandoNovo(true)} className="w-full text-left text-sm text-emerald-700 font-semibold border border-dashed border-emerald-400 rounded-lg p-2.5 tap-target">
               + Cadastrar item novo
@@ -6476,7 +6665,7 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
               className="w-14 font-mono2 border-b-2 border-emerald-600 outline-none text-center shrink-0" aria-label="Editar quantidade" />
           ) : (
             <button onClick={() => { setQtdEditavel(String(item.quantidade)); setEditandoQtd(true); }} aria-label="Tocar pra editar a quantidade"
-              className="font-mono2 underline decoration-dotted decoration-stone-300 shrink-0 tap-target">
+              className="font-mono2 underline decoration-dotted decoration-stone-300 shrink-0 py-1.5 -my-1.5">
               {variante?.tamanho_quantidade && item.unidade === "un" ? `${item.quantidade}× ${tamanhoDisplay(variante)}` : `${item.quantidade}${item.unidade}`}
             </button>
           )}
@@ -6742,7 +6931,7 @@ function ModalEditarItem({ item, marcarComprado, catalogo, setCatalogo, sessoes,
 
         {alertaOutlier && (
           <div className="bg-amber-50 text-amber-700 text-xs p-3 rounded-lg mb-3">
-            Esse preço está bem diferente do habitual (méd {brl(mediaRef)}). Confirma mesmo assim?
+            Esse preço está bem diferente do habitual (média {brl(mediaRef)}). Confirma mesmo assim?
             <button onClick={() => salvar(true)} className="block font-semibold underline mt-1 tap-target">Confirmar e salvar</button>
           </div>
         )}
@@ -6841,7 +7030,7 @@ function ModalLerCupomOcr({ onValorLido, onFechar }) {
   );
 }
 
-function ModalConferenciaNfe({ nfeInicial, itens, catalogo, onConfirmar, onFechar }) {
+function ModalConferenciaNfe({ nfeInicial, itens, catalogo, setCatalogo, onConfirmar, onFechar }) {
   useFecharComVoltar(true, onFechar);
   const [nfe, setNfe] = useState(() => {
     const copia = { ...nfeInicial, itens: agruparLinhasNfePorDescricao(nfeInicial.itens).map((l) => ({ ...l })) };
@@ -6854,16 +7043,42 @@ function ModalConferenciaNfe({ nfeInicial, itens, catalogo, onConfirmar, onFecha
     return copia;
   });
   const [vinculando, setVinculando] = useState(null); // id da linha da nota que está escolhendo item manualmente
+  /* Etapa sobre criar item direto na conferência: itens criados aqui ainda não existem em
+     `itens` (a lista da compra é só lida aqui, quem escreve de fato é o pai) — guarda à parte e
+     manda junto pro pai confirmar, que sabe como inserir na sessão de verdade. */
+  const [criandoItemPara, setCriandoItemPara] = useState(null); // id da linha que está criando item novo
+  const [novosItensCriados, setNovosItensCriados] = useState([]);
 
   function atualizarLinha(linhaId, patch) {
     setNfe((n) => ({ ...n, itens: n.itens.map((l) => (l.id === linhaId ? { ...l, ...patch } : l)) }));
   }
-  function itemDaLinha(linha) { return linha.vinculado_item_id ? itens.find((it) => it.id === linha.vinculado_item_id) : null; }
+  function itemDaLinha(linha) {
+    if (!linha.vinculado_item_id) return null;
+    return itens.find((it) => it.id === linha.vinculado_item_id) || novosItensCriados.find((it) => it.id === linha.vinculado_item_id);
+  }
+  /* Etapa sobre sugestão inteligente: reaproveita a MESMA pontuação que já decide o casamento
+     automático (pontuarMatchNfe) — "BALA FINI 80" pontua alto pra qualquer produto "Bala" (bate
+     a palavra) e mais ainda se a marca for "Fini" (bate o nome da marca colado na descrição),
+     subindo os dois pro topo da lista sem precisar de lógica de busca nova nenhuma. */
+  function itensOrdenadosPorParecenca(descricaoNfe) {
+    return [...itens.filter((it) => it.comprado)].sort((a, b) => pontuarMatchNfe(descricaoNfe, b, catalogo) - pontuarMatchNfe(descricaoNfe, a, catalogo));
+  }
+
+  function criarItemDaLinha(linha, varianteId, unidadePadrao) {
+    const precoUnit = linha.quantidade ? linha.valor_total / linha.quantidade : linha.valor_unitario;
+    const novoItem = {
+      id: uid(), produto_variante_id: varianteId, quantidade: linha.quantidade || 1, unidade: unidadePadrao || "un",
+      preco_pago: precoUnit, preco_normal: null, promocao: null, subtotal: linha.valor_total, comprado: true,
+    };
+    setNovosItensCriados((ns) => [...ns, novoItem]);
+    atualizarLinha(linha.id, { vinculado_item_id: novoItem.id });
+    setCriandoItemPara(null);
+  }
 
   const itensSemNota = itens.filter((it) => it.comprado && !nfe.itens.some((l) => l.vinculado_item_id === it.id));
 
   function confirmar() {
-    onConfirmar(nfe);
+    onConfirmar(nfe, novosItensCriados);
   }
 
   return (
@@ -6897,9 +7112,15 @@ function ModalConferenciaNfe({ nfeInicial, itens, catalogo, onConfirmar, onFecha
                     <div className="text-xs text-amber-700 uppercase font-semibold mb-1">Não encontrado na sua lista</div>
                     <div className="text-sm font-semibold text-stone-700 truncate">{linha.descricao}</div>
                     <div className="text-xs font-mono2 text-stone-500 mb-2">{linha.quantidade}x · {brl(linha.valor_total)}{linha.linhasOriginais > 1 ? ` · combina ${linha.linhasOriginais} linhas da nota` : ""}</div>
-                    {vinculando === linha.id ? (
+                    {criandoItemPara === linha.id ? (
+                      <div className="border-t border-stone-100 pt-2">
+                        <FormNovoItemRapido catalogo={catalogo} setCatalogo={setCatalogo} nomeInicial={linha.descricao}
+                          onCriado={(varianteId, unidadePadrao) => criarItemDaLinha(linha, varianteId, unidadePadrao)}
+                          onCancelar={() => setCriandoItemPara(null)} />
+                      </div>
+                    ) : vinculando === linha.id ? (
                       <div className="space-y-1 border-t border-stone-100 pt-2">
-                        {itens.filter((it) => it.comprado).map((it) => {
+                        {itensOrdenadosPorParecenca(linha.descricao).map((it) => {
                           const v = by(catalogo.variantes, it.produto_variante_id);
                           const p = v && by(catalogo.produtos, v.produto_id);
                           return (
@@ -6912,7 +7133,8 @@ function ModalConferenciaNfe({ nfeInicial, itens, catalogo, onConfirmar, onFecha
                     ) : (
                       <div className="flex gap-2">
                         <button onClick={() => setVinculando(linha.id)} className="flex-1 text-xs border border-stone-300 rounded-lg py-2 tap-target">Vincular a um item</button>
-                        <button onClick={() => atualizarLinha(linha.id, { ignorado: true })} className="flex-1 text-xs border border-stone-300 rounded-lg py-2 text-stone-500 tap-target">Ignorar linha</button>
+                        <button onClick={() => setCriandoItemPara(linha.id)} className="flex-1 text-xs border border-emerald-300 text-emerald-700 rounded-lg py-2 tap-target">+ Criar item</button>
+                        <button onClick={() => atualizarLinha(linha.id, { ignorado: true })} className="flex-1 text-xs border border-stone-300 rounded-lg py-2 text-stone-500 tap-target">Ignorar</button>
                       </div>
                     )}
                   </div>
@@ -6976,7 +7198,7 @@ function ModalConferenciaNfe({ nfeInicial, itens, catalogo, onConfirmar, onFecha
    Mostra tudo, com gráfico embutido (22.4a); só finaliza ao tocar
    no botão separado "Finalizar compra".
 ========================================================= */
-function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado, onClose, arquivoCompartilhado, onUsarArquivoCompartilhado }) {
+function ModalPreviaCompra({ catalogo, setCatalogo, sessao, sessoes, setSessoes, onFinalizado, onClose, arquivoCompartilhado, onUsarArquivoCompartilhado }) {
   useFecharComVoltar(true, onClose);
   const totalCalc = somarValores(...sessao.itens.map((it) => it.subtotal || 0));
   const [notaTexto, setNotaTexto] = useState("");
@@ -7092,10 +7314,10 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
     if (onUsarArquivoCompartilhado) onUsarArquivoCompartilhado();
   }
 
-  function confirmarConferencia(nfeConferida) {
+  function confirmarConferencia(nfeConferida, novosItens) {
     setSessoes((ss) => ss.map((s) => {
       if (s.id !== sessao.id) return s;
-      let itensAtualizados = s.itens;
+      let itensAtualizados = novosItens && novosItens.length ? [...s.itens, ...novosItens] : s.itens;
       for (const linha of nfeConferida.itens) {
         if (linha.aceitarValorNota && linha.vinculado_item_id) {
           itensAtualizados = itensAtualizados.map((it) => it.id === linha.vinculado_item_id
@@ -7305,7 +7527,7 @@ function ModalPreviaCompra({ catalogo, sessao, sessoes, setSessoes, onFinalizado
         <button onClick={finalizar} className="w-full bg-emerald-800 text-white font-semibold py-3 rounded-xl tap-target">✓ Finalizar compra</button>
       </div>
       {nfeParaConferir && (
-        <ModalConferenciaNfe nfeInicial={nfeParaConferir} itens={sessao.itens} catalogo={catalogo}
+        <ModalConferenciaNfe nfeInicial={nfeParaConferir} itens={sessao.itens} catalogo={catalogo} setCatalogo={setCatalogo}
           onConfirmar={confirmarConferencia} onFechar={() => setNfeParaConferir(null)} />
       )}
       {lendoQr && (
@@ -7352,8 +7574,11 @@ function ModalOrcamento({ orcamentoAtual, onSalvar, onFechar }) {
   return (
     <div className="fixed inset-0 bg-black/40 flex items-end justify-center z-[65]" onClick={onFechar}>
       <div className="bg-white rounded-t-2xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-lg font-bold mb-3">🎯 Orçamento da compra</h3>
-        <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5 mb-4">
+        <h3 className="text-lg font-bold mb-1 flex items-center justify-between">
+          <span>🎯 Orçamento da compra</span>
+          <span className="text-[10px] text-stone-400 font-mono2 bg-stone-100 rounded px-1.5 py-0.5 font-normal shrink-0">30000→R$300,00</span>
+        </h3>
+        <div className="flex items-center gap-2 border border-stone-300 rounded-xl px-3 py-2.5 mb-4 mt-2">
           <span className="text-stone-400 font-mono2">R$</span>
           <input value={texto} onChange={(e) => setTexto(sanitizarEntradaPreco(e.target.value))} placeholder="ex: 30000 = R$300,00" className="font-mono2 font-bold flex-1 outline-none" aria-label="Orçamento" autoFocus />
         </div>
@@ -7405,7 +7630,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
             {avisos.map((a, i) => <div key={i} className="text-sm text-emerald-800">{a.nome} — economia estimada de {brl(a.economia)}</div>)}
           </div>
         )}
-        {modalNova && <ModalNovaSessao catalogo={catalogo} sessoes={sessoes} setSessoes={setSessoes} onCriada={setSessaoAbertaId} onClose={() => setModalNova(false)} />}
+        {modalNova && <ModalNovaSessao catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} onCriada={setSessaoAbertaId} onClose={() => setModalNova(false)} />}
       </div>
     );
   }
@@ -7504,28 +7729,27 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
 
   return (
     <div className="h-full flex flex-col">
-      <div className="p-4 pb-2 shrink-0">
+      <div className="px-3 pt-2 pb-1.5 shrink-0">
         {emCorrecao && (
           <div className="bg-amber-100 text-amber-800 text-xs font-semibold rounded-lg px-3 py-2 mb-2 text-center">
             🔧 Modo correção — finalize de novo pra voltar ao uso normal
           </div>
         )}
-        <div className="bg-white border border-stone-200 rounded-xl p-3 flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: mercado?.cor }} />
-            <div className="min-w-0"><div className="font-bold text-lg text-stone-800 leading-tight truncate">{mercado?.nome}</div><div className="text-xs text-stone-500">{dataCurta(sessaoAtiva.data_hora)}</div></div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: mercado?.cor }} />
+            <span className="font-bold text-stone-800 truncate">{mercado?.nome}</span>
+            <span className="text-xs text-stone-400 shrink-0">· {dataCurta(sessaoAtiva.data_hora)}</span>
           </div>
-          <div className="flex items-center gap-3 shrink-0">
-            {!sessaoEmCorrecaoId && <button onClick={() => setModalNova(true)} className="text-xs text-emerald-700 font-semibold tap-target">+ Nova lista</button>}
-            {ativas.length > 1 && !sessaoEmCorrecaoId && <button onClick={() => setSessaoAbertaId(null)} className="text-xs text-emerald-700 tap-target">trocar</button>}
-            <button onClick={cancelarCompra} className="text-xs text-red-400 tap-target">{emCorrecao ? "Cancelar correção" : "Excluir"}</button>
+          <div className="flex items-center gap-2 shrink-0 text-xs">
+            <button onClick={() => setModalOrcamento(true)} className="text-stone-400 tap-target">🎯 {sessaoAtiva.orcamento != null ? brl(sessaoAtiva.orcamento) : "Orçamento"}</button>
+            <button onClick={() => setMostrarLegenda(true)} aria-label="Ver legenda de cores da lista" className="w-5 h-5 rounded-full border border-stone-300 text-stone-400 font-bold flex items-center justify-center tap-target shrink-0">?</button>
           </div>
         </div>
-        <div className="flex items-center justify-end gap-3 px-1 mb-2 text-xs">
-          <button onClick={() => setModalOrcamento(true)} className="text-stone-400 tap-target flex items-center gap-1">
-            🎯 {sessaoAtiva.orcamento != null ? brl(sessaoAtiva.orcamento) : "Orçamento"}
-          </button>
-          <button onClick={() => setMostrarLegenda(true)} aria-label="Ver legenda de cores da lista" className="w-5 h-5 rounded-full border border-stone-300 text-stone-400 font-bold flex items-center justify-center tap-target shrink-0">?</button>
+        <div className="flex items-center gap-3 text-xs mt-1">
+          {!sessaoEmCorrecaoId && <button onClick={() => setModalNova(true)} className="text-emerald-700 font-semibold tap-target">+ Nova lista</button>}
+          {ativas.length > 1 && !sessaoEmCorrecaoId && <button onClick={() => setSessaoAbertaId(null)} className="text-emerald-700 tap-target">trocar</button>}
+          <button onClick={cancelarCompra} className="text-red-400 tap-target">{emCorrecao ? "Cancelar correção" : "Excluir"}</button>
         </div>
         {mostrarLegenda && (
           <div className="fixed inset-0 z-[80] bg-black/30 flex items-center justify-center px-8" onClick={() => setMostrarLegenda(false)}>
@@ -7615,7 +7839,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
           onAdd={(item) => { atualizarSessao({ itens: [...sessaoAtiva.itens, item] }); setModalAdd(false); }} onClose={() => setModalAdd(false)} />
       )}
       {modalPrevia && (
-        <ModalPreviaCompra catalogo={catalogo} sessao={sessaoAtiva} sessoes={sessoes} setSessoes={setSessoes} onClose={() => setModalPrevia(false)} onFinalizado={onSessaoFinalizada} arquivoCompartilhado={arquivoCompartilhado} onUsarArquivoCompartilhado={onUsarArquivoCompartilhado} />
+        <ModalPreviaCompra catalogo={catalogo} setCatalogo={setCatalogo} sessao={sessaoAtiva} sessoes={sessoes} setSessoes={setSessoes} onClose={() => setModalPrevia(false)} onFinalizado={onSessaoFinalizada} arquivoCompartilhado={arquivoCompartilhado} onUsarArquivoCompartilhado={onUsarArquivoCompartilhado} />
       )}
       {itemEditando && (
         <ModalEditarItem item={itemEditando.item} marcarComprado={itemEditando.marcarCompradoAoSalvar} catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} sessaoAtiva={sessaoAtiva} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey}
@@ -7625,7 +7849,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
       {modalOrcamento && (
         <ModalOrcamento orcamentoAtual={sessaoAtiva.orcamento} onSalvar={(valor) => setSessoes((ss) => ss.map((s) => (s.id === sessaoAtiva.id ? { ...s, orcamento: valor } : s)))} onFechar={() => setModalOrcamento(false)} />
       )}
-      {modalNova && <ModalNovaSessao catalogo={catalogo} sessoes={sessoes} setSessoes={setSessoes} onCriada={setSessaoAbertaId} onClose={() => setModalNova(false)} />}
+      {modalNova && <ModalNovaSessao catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} onCriada={setSessaoAbertaId} onClose={() => setModalNova(false)} />}
     </div>
   );
 }
@@ -7633,7 +7857,7 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
 /* =========================================================
    DETALHE DE SESSÃO PASSADA (gráfico vem do instantâneo salvo — 22.4b)
 ========================================================= */
-function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabriuParaCorrecao, arquivoCompartilhado, onUsarArquivoCompartilhado }) {
+function SessaoDetalhe({ catalogo, setCatalogo, sessao, sessoes, setSessoes, onClose, onReabriuParaCorrecao, arquivoCompartilhado, onUsarArquivoCompartilhado }) {
   useFecharComVoltar(true, onClose);
   const mercado = by(catalogo.mercados, sessao.mercado_id);
   const comprados = sessao.itens.filter((it) => it.comprado);
@@ -7762,10 +7986,10 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
     processarArquivoNota(arquivoCompartilhado.arquivo);
     if (onUsarArquivoCompartilhado) onUsarArquivoCompartilhado();
   }
-  function confirmarConferencia(nfeConferida) {
+  function confirmarConferencia(nfeConferida, novosItens) {
     setSessoes((ss) => ss.map((s) => {
       if (s.id !== sessao.id) return s;
-      let itensAtualizados = s.itens;
+      let itensAtualizados = novosItens && novosItens.length ? [...s.itens, ...novosItens] : s.itens;
       for (const linha of nfeConferida.itens) {
         if (linha.aceitarValorNota && linha.vinculado_item_id) {
           itensAtualizados = itensAtualizados.map((it) => it.id === linha.vinculado_item_id
@@ -7906,7 +8130,7 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
       </div>
       {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
       {nfeParaConferir && (
-        <ModalConferenciaNfe nfeInicial={nfeParaConferir} itens={sessao.itens} catalogo={catalogo}
+        <ModalConferenciaNfe nfeInicial={nfeParaConferir} itens={sessao.itens} catalogo={catalogo} setCatalogo={setCatalogo}
           onConfirmar={confirmarConferencia} onFechar={() => setNfeParaConferir(null)} />
       )}
       {lendoQr && (
@@ -7931,7 +8155,7 @@ function SessaoDetalhe({ catalogo, sessao, sessoes, setSessoes, onClose, onReabr
    sub-aba "Compras" (lista + busca + filtros) primeiro,
    sub-aba "Resumo" (agregados em gráfico) separada.
 ========================================================= */
-function TelaHistorico({ catalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAutomatico, onReabriuParaCorrecao }) {
+function TelaHistorico({ catalogo, setCatalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAutomatico, onReabriuParaCorrecao }) {
   const [subaba, setSubaba] = useState("compras");
   const [busca, setBusca] = useState("");
   const [filtroMercado, setFiltroMercado] = useState("");
@@ -7946,7 +8170,7 @@ function TelaHistorico({ catalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAu
 
   if (detalheId) {
     const s = fechadas.find((x) => x.id === detalheId);
-    if (s) return <SessaoDetalhe catalogo={catalogo} sessao={s} sessoes={sessoes} setSessoes={setSessoes} onClose={() => setDetalheId(null)} onReabriuParaCorrecao={onReabriuParaCorrecao} />;
+    if (s) return <SessaoDetalhe catalogo={catalogo} setCatalogo={setCatalogo} sessao={s} sessoes={sessoes} setSessoes={setSessoes} onClose={() => setDetalheId(null)} onReabriuParaCorrecao={onReabriuParaCorrecao} />;
   }
 
   const porMes = {}, porMercado = {}, porCategoria = {};
@@ -7980,8 +8204,11 @@ function TelaHistorico({ catalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAu
     .sort((a, b) => new Date(b.data_hora) - new Date(a.data_hora));
 
   return (
-    <div className="h-full overflow-y-auto p-4 pb-6">
-      <h2 className="text-2xl font-bold text-emerald-900 mb-3">Histórico</h2>
+    <div className="h-full flex flex-col">
+      <div className="px-4 pt-3 pb-1.5 shrink-0">
+        <div className="font-bold text-stone-800 text-sm text-center">🕓 Histórico</div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 pt-2 pb-6">
       <div className="flex gap-2 mb-4">
         <Chip selected={subaba === "compras"} onClick={() => setSubaba("compras")}>Compras</Chip>
         <Chip selected={subaba === "resumo"} onClick={() => setSubaba("resumo")}>Resumo</Chip>
@@ -8041,6 +8268,7 @@ function TelaHistorico({ catalogo, sessoes, setSessoes, abrirSessaoId, onAbriuAu
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -8079,9 +8307,11 @@ function TelaConfig({ catalogo, setCatalogo, sessoes, setSessoes, setPrecoIaCach
     });
   }
   return (
-    <div className="h-full overflow-y-auto p-4 pb-6 space-y-4">
-      <h2 className="text-2xl font-bold text-emerald-900">Config — Mercado</h2>
-
+    <div className="h-full flex flex-col">
+      <div className="px-4 pt-3 pb-1.5 shrink-0">
+        <div className="font-bold text-stone-800 text-sm text-center">⚙️ Config — Mercado</div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 pt-2 pb-6 space-y-4">
       {onAbrirConfigGeral && (
         <button onClick={onAbrirConfigGeral} className="w-full flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 tap-target">
           <span className="text-sm text-emerald-800 text-left"><b>💾 Backup completo</b> (protege seu histórico de verdade) fica nas Configurações gerais</span>
@@ -8113,6 +8343,7 @@ function TelaConfig({ catalogo, setCatalogo, sessoes, setSessoes, setPrecoIaCach
       </div>
 
       <button onClick={apagarTudo} className="text-xs text-red-400 underline block mx-auto pt-2 tap-target">Apagar dados do Mercado e recomeçar</button>
+      </div>
       {confirmar && <ModalConfirmar titulo={confirmar.titulo} mensagem={confirmar.mensagem} textoConfirmar={confirmar.textoConfirmar} severo={confirmar.severo} onConfirmar={confirmar.acao} onCancelar={() => setConfirmar(null)} />}
     </div>
   );
@@ -8209,8 +8440,9 @@ function AppMercado({ apiKey, setApiKey, onVoltarHub, onAbrirConfigGeral, arquiv
   }
 
   if (loading || !catalogo) return (
-    <div className="h-screen flex flex-col items-center justify-center bg-stone-100 text-stone-400 gap-2 max-w-md mx-auto">
-      <div>Carregando…</div>
+    <div className="h-screen flex flex-col items-center justify-center bg-stone-100 gap-2 max-w-md mx-auto">
+      <div className="text-4xl animate-pulse">🛒</div>
+      <div className="text-sm text-stone-400">Carregando…</div>
     </div>
   );
 
@@ -8218,8 +8450,8 @@ function AppMercado({ apiKey, setApiKey, onVoltarHub, onAbrirConfigGeral, arquiv
 
   return (
     <div className="h-screen flex flex-col bg-stone-100 max-w-md mx-auto">
-      <div className="bg-emerald-800 text-white px-4 pt-4 pb-3 shrink-0 flex items-center gap-3">
-        <button onClick={onVoltarHub} aria-label="Voltar ao início" className="tap-target text-emerald-200 text-xl">←</button>
+      <div className="bg-emerald-800 text-white px-4 pt-3 pb-2.5 shrink-0 flex items-center gap-3">
+        <button onClick={() => (aba !== "lista" ? mudarAba("lista") : onVoltarHub())} aria-label={aba !== "lista" ? "Voltar pra Lista" : "Voltar ao início"} className="tap-target text-emerald-200 text-xl">←</button>
         <div className="font-bold text-xl">🛒 Mercado</div>
       </div>
 
@@ -8245,7 +8477,7 @@ function AppMercado({ apiKey, setApiKey, onVoltarHub, onAbrirConfigGeral, arquiv
         {aba === "lista" && <TelaLista catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} onSessaoFinalizada={onSessaoFinalizada} sessaoEmCorrecaoId={sessaoEmCorrecao?.id || null} arquivoCompartilhado={arquivoCompartilhado} onUsarArquivoCompartilhado={onUsarArquivoCompartilhado} />}
         {aba === "mercados" && <TelaMercados catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} />}
         {aba === "produtos" && <TelaProdutos catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} precoIaCache={precoIaCache} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} />}
-        {aba === "historico" && <TelaHistorico catalogo={catalogo} sessoes={sessoes} setSessoes={setSessoes} abrirSessaoId={sessaoParaAbrir} onAbriuAutomatico={() => setSessaoParaAbrir(null)} onReabriuParaCorrecao={() => setAba("lista")} />}
+        {aba === "historico" && <TelaHistorico catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} abrirSessaoId={sessaoParaAbrir} onAbriuAutomatico={() => setSessaoParaAbrir(null)} onReabriuParaCorrecao={() => setAba("lista")} />}
         {aba === "config" && <TelaConfig catalogo={catalogo} setCatalogo={setCatalogo} sessoes={sessoes} setSessoes={setSessoes} setPrecoIaCache={setPrecoIaCache} apiKey={apiKey} setApiKey={setApiKey} onAbrirConfigGeral={onAbrirConfigGeral} />}
       </div>
       <TabBarInterna aba={aba} setAba={mudarAba} temSessaoAtiva={temSessaoAtiva} restrito={emModoCorrecao} />

@@ -6650,6 +6650,21 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
 
   return (
     <div className="flex items-center gap-2.5 py-1.5">
+      <button
+        onClick={() => {
+          /* Etapa sobre "comprado sem preço": marcar como comprado sem preço nenhum não faz
+             sentido — é o núcleo do app (controlar gasto real). Em vez de só bloquear, abre o
+             editor já pedindo o preço; salvando lá, o item já sai marcado como comprado, sem
+             precisar tocar aqui de novo. Desmarcar (já comprado → não comprado) continua direto,
+             sem pedir nada — isso nunca teve problema. */
+          if (!item.comprado && item.preco_pago == null) { onAbrirEditor(item, true); return; }
+          onToggleComprado(item);
+        }}
+        aria-label={item.comprado ? `Desmarcar ${produto?.nome} como comprado` : `Marcar ${produto?.nome} como comprado`}
+        className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-sm font-bold ${item.comprado ? "bg-emerald-600 text-white" : "border-2 border-stone-300 text-transparent"}`}>
+        ✓
+      </button>
+
       {variante?.foto && (
         <div className="w-9 h-9 rounded-lg overflow-hidden shrink-0 bg-white border border-stone-200">
           <img src={variante.foto} className="w-full h-full object-cover" alt="" />
@@ -6697,26 +6712,16 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
         </div>
       </div>
 
-      <div className="flex items-center gap-1.5 shrink-0">
-        <button
-          onClick={() => {
-            /* Etapa sobre "comprado sem preço": marcar como comprado sem preço nenhum não faz
-               sentido — é o núcleo do app (controlar gasto real). Em vez de só bloquear, abre o
-               editor já pedindo o preço; salvando lá, o item já sai marcado como comprado, sem
-               precisar tocar aqui de novo. Desmarcar (já comprado → não comprado) continua direto,
-               sem pedir nada — isso nunca teve problema. */
-            if (!item.comprado && item.preco_pago == null) { onAbrirEditor(item, true); return; }
-            onToggleComprado(item);
-          }}
-          aria-label={item.comprado ? `Desmarcar ${produto?.nome} como comprado` : `Marcar ${produto?.nome} como comprado`}
-          className={`tap-target rounded-full flex items-center justify-center text-sm font-bold ${item.comprado ? "bg-emerald-600 text-white" : "border border-stone-300 text-transparent"}`}>
-          ✓
-        </button>
-        <button onClick={() => onRemoverConfirmado(item)} aria-label={`Remover ${produto?.nome} da lista`}
-          className="tap-target flex items-center justify-center text-base text-red-400">
-          🗑️
-        </button>
-      </div>
+      {/* Etapa sobre lixeira vermelha de verdade: 🗑️ é emoji — tem cor própria fixa do sistema,
+          nenhuma classe de cor (text-red-...) muda isso. Ícone desenhado (SVG) com
+          stroke="currentColor" resolve, porque aí a cor vem de verdade do CSS. */}
+      <button onClick={() => onRemoverConfirmado(item)} aria-label={`Remover ${produto?.nome} da lista`}
+        className="w-9 h-9 shrink-0 flex items-center justify-center text-red-500">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+          <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" />
+        </svg>
+      </button>
     </div>
   );
 }
@@ -7693,6 +7698,24 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
   function atualizarSessao(patch) { setSessoes((ss) => ss.map((s) => (s.id === sessaoAtiva.id ? { ...s, ...patch } : s))); }
   function atualizarItem(itemId, patch) { atualizarSessao({ itens: sessaoAtiva.itens.map((it) => (it.id === itemId ? { ...it, ...patch } : it)) }); }
   function toggleComprado(item) { atualizarItem(item.id, { comprado: !item.comprado }); }
+  /* Etapa sobre ações em massa: "marcar todos" respeita a mesma regra de "comprado sem preço"
+     que já existe pra toque individual — só marca quem já tem preço, não força um preço em
+     branco pra todo mundo de uma vez. "Desmarcar todos" não tem essa restrição (desmarcar sempre
+     foi livre). "Excluir todos" pede confirmação — reaproveita o mesmo modal que já existe pra
+     excluir 1 item, só muda a mensagem e a ação. */
+  function marcarTodosComprados() {
+    atualizarSessao({ itens: sessaoAtiva.itens.map((it) => (it.preco_pago != null ? { ...it, comprado: true } : it)) });
+  }
+  function desmarcarTodos() {
+    atualizarSessao({ itens: sessaoAtiva.itens.map((it) => ({ ...it, comprado: false })) });
+  }
+  function pedirExcluirTodos() {
+    setConfirmar({
+      titulo: "Excluir todos os itens", severo: true, textoConfirmar: "Excluir todos",
+      mensagem: `Isso remove os ${sessaoAtiva.itens.length} itens dessa lista. Não dá pra desfazer.`,
+      acao: () => { atualizarSessao({ itens: [] }); setConfirmar(null); },
+    });
+  }
   function atualizarQuantidade(item, novaQtd) {
     const patch = { quantidade: novaQtd };
     if (item.preco_pago != null) patch.subtotal = multiplicarValor(item.preco_pago, novaQtd);
@@ -7806,6 +7829,14 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
         <div className="h-full overflow-y-auto paper-sheet">
           <div className="paper-pad pr-4 pb-24">
             {!itensLista.length && !itensCarrinho.length && <p className="text-stone-400 text-sm text-center py-10 handwrite text-lg">Lista vazia. Toque em "+" pra adicionar itens.</p>}
+
+            {(!!itensLista.length || !!itensCarrinho.length) && (
+              <div className="flex items-center gap-3 text-xs mb-2">
+                <button onClick={marcarTodosComprados} className="text-emerald-700 tap-target">Marcar todos</button>
+                <button onClick={desmarcarTodos} className="text-emerald-700 tap-target">Desmarcar todos</button>
+                <button onClick={pedirExcluirTodos} className="text-red-400 tap-target">Excluir todos</button>
+              </div>
+            )}
 
             {!!itensLista.length && (
               <div>

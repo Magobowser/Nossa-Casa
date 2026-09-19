@@ -26,7 +26,7 @@
    index.html/mercado.js/financas.js (rede primeiro, cai pro que já foi salvo se estiver offline).
    Sai da lista de CDN, entra na lista local. */
 
-const CACHE_NAME = "nossa-casa-v9";
+const CACHE_NAME = "nossa-casa-v10";
 const ARQUIVOS_LOCAIS = ["./", "./index.html", "./mercado.js", "./financas.js", "./tailwind.css", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 const ARQUIVOS_CDN = [
   "https://unpkg.com/react@18/umd/react.production.min.js",

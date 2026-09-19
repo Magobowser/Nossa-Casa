@@ -7856,6 +7856,14 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
                     </div>
                   );
                 })}
+                {/* Etapa sobre bug real relatado: o botão tinha ficado depois dos DOIS blocos
+                   (Lista e Carrinho), então sempre seguia quem renderizasse por último — pulava
+                   pro fim do Carrinho assim que o primeiro item era marcado como comprado.
+                   Agora mora dentro do próprio bloco da Lista, sempre ancorado nela. */}
+                <button onClick={() => setModalAdd(true)} aria-label="Adicionar item" className="flex items-center justify-end gap-1.5 h-7 w-full">
+                  <span className="text-sm text-emerald-700 font-semibold">Adicionar produto</span>
+                  <span className="w-4 h-4 rounded-full bg-emerald-700 text-white flex items-center justify-center text-[10px] font-bold shrink-0">+</span>
+                </button>
               </div>
             )}
 
@@ -7887,14 +7895,14 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
               </div>
             )}
 
-            {/* Etapa sobre mockup aprovado: o botão de adicionar item deixou de flutuar solto no
-               canto — vira a última linha da própria lista, alinhado à direita, mesma altura de
-               28px das outras linhas de texto (bate com a pauta do papel). */}
-            <button onClick={() => setModalAdd(true)} aria-label="Adicionar item"
-              className="flex items-center justify-end gap-1.5 h-7 w-full mt-1">
-              <span className="text-sm text-emerald-700 font-semibold">Adicionar produto</span>
-              <span className="w-4 h-4 rounded-full bg-emerald-700 text-white flex items-center justify-center text-[10px] font-bold shrink-0">+</span>
-            </button>
+            {/* Se a Lista estiver vazia (tudo já foi comprado), o botão não pode simplesmente
+               sumir — mostra sozinho, sem o cabeçalho "📝 Lista" que não teria itens embaixo. */}
+            {!itensLista.length && (
+              <button onClick={() => setModalAdd(true)} aria-label="Adicionar item" className="flex items-center justify-end gap-1.5 h-7 w-full">
+                <span className="text-sm text-emerald-700 font-semibold">Adicionar produto</span>
+                <span className="w-4 h-4 rounded-full bg-emerald-700 text-white flex items-center justify-center text-[10px] font-bold shrink-0">+</span>
+              </button>
+            )}
           </div>
         </div>
       </div>

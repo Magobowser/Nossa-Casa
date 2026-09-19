@@ -6649,7 +6649,7 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
   const simbolo = indicador === "bom" ? " ▼" : indicador === "caro" ? " ▲" : "";
 
   return (
-    <div className="flex items-center gap-2.5 py-1.5">
+    <div className="flex items-center gap-2 h-14 overflow-hidden">
       <button
         onClick={() => {
           /* Etapa sobre "comprado sem preço": marcar como comprado sem preço nenhum não faz
@@ -6661,48 +6661,39 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
           onToggleComprado(item);
         }}
         aria-label={item.comprado ? `Desmarcar ${produto?.nome} como comprado` : `Marcar ${produto?.nome} como comprado`}
-        className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-sm font-bold ${item.comprado ? "bg-emerald-600 text-white" : "border-2 border-stone-300 text-transparent"}`}>
+        className={`w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-xs font-bold ${item.comprado ? "bg-emerald-600 text-white" : "border-2 border-stone-300 text-transparent"}`}>
         ✓
       </button>
 
       {variante?.foto && (
-        <div className="w-9 h-9 rounded-lg overflow-hidden shrink-0 bg-white border border-stone-200">
+        <div className="w-7 h-7 rounded-lg overflow-hidden shrink-0 bg-white border border-stone-200">
           <img src={variante.foto} className="w-full h-full object-cover" alt="" />
         </div>
       )}
 
+      {/* Etapa sobre respeitar as linhas do caderno: o fundo de papel tem linhas reais a cada
+         28px (CSS em index.html). Pra bater com isso, cada item precisa de altura fixa e
+         previsível — 2 linhas de 28px = 56px, sempre, nunca 3. Isso também é o que resolve o
+         problema de itens com contador +/- estourando pra 3 linhas: removido o contador (o
+         usuário testou os dois jeitos como combinado e decidiu que só o toque-pra-editar cabe
+         no tamanho certo), e tirado o "flex-wrap" que permitia a 3ª linha aparecer. */}
       <div className="flex-1 min-w-0">
-        <button onClick={() => onAbrirEditor(item)} aria-label={`Editar ${produto?.nome || "item"}`} className="text-left w-full">
-          <div className="handwrite text-lg leading-tight truncate" style={{ color: item.comprado ? "var(--ink-blue)" : "var(--ink-black)", textDecoration: item.comprado ? "line-through" : "none" }}>
+        <button onClick={() => onAbrirEditor(item)} aria-label={`Editar ${produto?.nome || "item"}`} className="text-left w-full block h-7 leading-7 overflow-hidden">
+          <div className="handwrite text-lg truncate" style={{ color: item.comprado ? "var(--ink-blue)" : "var(--ink-black)", textDecoration: item.comprado ? "line-through" : "none" }}>
             {variante?.favorita && "⭐ "}{produto?.nome}
           </div>
         </button>
-        <div className="text-xs text-stone-500 flex items-center gap-1 flex-wrap leading-tight">
-          <button onClick={() => onAbrirEditor(item)} className="truncate text-left shrink-0 max-w-[40%]">{marca?.nome || "genérico"}</button>
+        <div className="text-xs text-stone-500 flex items-center gap-1 h-7 leading-7 overflow-hidden whitespace-nowrap">
+          <button onClick={() => onAbrirEditor(item)} className="truncate text-left shrink-0 max-w-[35%]">{marca?.nome || "genérico"}</button>
           <span className="shrink-0 text-stone-300">·</span>
           {editandoQtd ? (
             <input autoFocus inputMode="decimal" value={qtdEditavel} onChange={(e) => setQtdEditavel(e.target.value)}
               onBlur={confirmarQtd} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
               className="w-14 font-mono2 border-b-2 border-emerald-600 outline-none text-center shrink-0" aria-label="Editar quantidade" />
-          ) : item.unidade === "un" ? (
-            /* Etapa sobre testar os dois jeitos: pra unidade inteira, o −/+ convive com o toque-
-               pra-editar (que continua igual) — pedido do usuário pra comparar os dois na prática
-               antes de decidir qual fica. Pra kg/L, só o toque-pra-editar continua fazendo
-               sentido (não dá pra "+1" um peso fracionado). */
-            <span className="flex items-center gap-1.5 shrink-0">
-              <button onClick={() => onAtualizarQuantidade(item, Math.max(1, item.quantidade - 1))} aria-label="Diminuir quantidade"
-                className="w-6 h-6 rounded-full border border-stone-300 flex items-center justify-center text-stone-500 text-sm leading-none shrink-0">−</button>
-              <button onClick={() => { setQtdEditavel(String(item.quantidade)); setEditandoQtd(true); }} aria-label="Tocar pra editar a quantidade"
-                className="font-mono2 underline decoration-dotted decoration-stone-300 shrink-0">
-                {variante?.tamanho_quantidade ? `${item.quantidade}× ${tamanhoDisplay(variante)}` : `${item.quantidade}${item.unidade}`}
-              </button>
-              <button onClick={() => onAtualizarQuantidade(item, item.quantidade + 1)} aria-label="Aumentar quantidade"
-                className="w-6 h-6 rounded-full border border-stone-300 flex items-center justify-center text-stone-500 text-sm leading-none shrink-0">+</button>
-            </span>
           ) : (
             <button onClick={() => { setQtdEditavel(String(item.quantidade)); setEditandoQtd(true); }} aria-label="Tocar pra editar a quantidade"
-              className="font-mono2 underline decoration-dotted decoration-stone-300 shrink-0 py-1.5 -my-1.5">
-              {item.quantidade}{item.unidade}
+              className="font-mono2 underline decoration-dotted decoration-stone-300 shrink-0">
+              {variante?.tamanho_quantidade && item.unidade === "un" ? `${item.quantidade}× ${tamanhoDisplay(variante)}` : `${item.quantidade}${item.unidade}`}
             </button>
           )}
           <span className="shrink-0 text-stone-300">·</span>
@@ -6716,8 +6707,8 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
           nenhuma classe de cor (text-red-...) muda isso. Ícone desenhado (SVG) com
           stroke="currentColor" resolve, porque aí a cor vem de verdade do CSS. */}
       <button onClick={() => onRemoverConfirmado(item)} aria-label={`Remover ${produto?.nome} da lista`}
-        className="w-9 h-9 shrink-0 flex items-center justify-center text-red-500">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+        className="w-7 h-7 shrink-0 flex items-center justify-center text-red-500">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
           <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
           <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" />
         </svg>

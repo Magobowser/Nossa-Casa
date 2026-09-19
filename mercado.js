@@ -6645,20 +6645,22 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
   const simbolo = indicador === "bom" ? " ▼" : indicador === "caro" ? " ▲" : "";
 
   return (
-    <div className="flex items-start gap-2.5 py-2">
-      <div className="w-11 h-11 rounded-lg overflow-hidden shrink-0 flex items-center justify-center text-xl bg-white border border-stone-200">
-        {variante?.foto ? <img src={variante.foto} className="w-full h-full object-cover" alt="" /> : (categoria?.icone || "🛒")}
-      </div>
+    <div className="flex items-center gap-2.5 py-1.5">
+      {variante?.foto && (
+        <div className="w-9 h-9 rounded-lg overflow-hidden shrink-0 bg-white border border-stone-200">
+          <img src={variante.foto} className="w-full h-full object-cover" alt="" />
+        </div>
+      )}
 
       <div className="flex-1 min-w-0">
         <button onClick={() => onAbrirEditor(item)} aria-label={`Editar ${produto?.nome || "item"}`} className="text-left w-full">
-          <div className="handwrite text-xl leading-tight truncate" style={{ color: item.comprado ? "var(--ink-blue)" : "var(--ink-black)", textDecoration: item.comprado ? "line-through" : "none" }}>
+          <div className="handwrite text-lg leading-tight truncate" style={{ color: item.comprado ? "var(--ink-blue)" : "var(--ink-black)", textDecoration: item.comprado ? "line-through" : "none" }}>
             {variante?.favorita && "⭐ "}{produto?.nome}
           </div>
         </button>
-        <div className="text-xs text-stone-500 flex items-center gap-1">
-          <button onClick={() => onAbrirEditor(item)} className="truncate text-left">{marca?.nome || "genérico"}</button>
-          <span className="shrink-0">·</span>
+        <div className="text-xs text-stone-500 flex items-center gap-1 flex-wrap leading-tight">
+          <button onClick={() => onAbrirEditor(item)} className="truncate text-left shrink-0 max-w-[40%]">{marca?.nome || "genérico"}</button>
+          <span className="shrink-0 text-stone-300">·</span>
           {editandoQtd ? (
             <input autoFocus inputMode="decimal" value={qtdEditavel} onChange={(e) => setQtdEditavel(e.target.value)}
               onBlur={confirmarQtd} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
@@ -6669,15 +6671,14 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
               {variante?.tamanho_quantidade && item.unidade === "un" ? `${item.quantidade}× ${tamanhoDisplay(variante)}` : `${item.quantidade}${item.unidade}`}
             </button>
           )}
+          <span className="shrink-0 text-stone-300">·</span>
+          <button onClick={() => onAbrirEditor(item)} className="font-mono2 font-semibold shrink-0" style={{ color: corPreco }}>
+            {item.preco_pago != null ? <>{brl(item.subtotal)}{temPromocao ? " 🏷️" : simbolo}</> : <span className="text-stone-400 font-normal">sem preço</span>}
+          </button>
         </div>
-        <button onClick={() => onAbrirEditor(item)} className="text-left w-full">
-          <div className="text-xs font-mono2 font-semibold" style={{ color: corPreco }}>
-            {item.preco_pago != null ? <>{brl(item.subtotal)}{temPromocao ? " 🏷️" : simbolo}</> : <span className="text-stone-400 font-normal">sem preço ainda</span>}
-          </div>
-        </button>
       </div>
 
-      <div className="flex items-center gap-2.5 shrink-0">
+      <div className="flex items-center gap-1.5 shrink-0">
         <button
           onClick={() => {
             /* Etapa sobre "comprado sem preço": marcar como comprado sem preço nenhum não faz
@@ -6689,12 +6690,12 @@ function ItemLinha({ item, catalogo, mediaRef, onAbrirEditor, onToggleComprado, 
             onToggleComprado(item);
           }}
           aria-label={item.comprado ? `Desmarcar ${produto?.nome} como comprado` : `Marcar ${produto?.nome} como comprado`}
-          className={`tap-target rounded-md border-2 flex items-center justify-center text-base font-bold ${item.comprado ? "bg-emerald-600 border-emerald-600 text-white" : "border-stone-300 bg-white text-transparent"}`}>
+          className={`tap-target rounded-full border-2 flex items-center justify-center text-sm font-bold ${item.comprado ? "bg-emerald-600 border-emerald-600 text-white" : "border-stone-300 bg-white text-transparent"}`}>
           ✓
         </button>
         <button onClick={() => onRemoverConfirmado(item)} aria-label={`Remover ${produto?.nome} da lista`}
-          className="tap-target rounded-md border-2 border-red-200 bg-white flex items-center justify-center text-red-500 text-base font-bold">
-          ✕
+          className="tap-target rounded-full border-2 border-red-200 bg-white flex items-center justify-center text-sm">
+          🗑️
         </button>
       </div>
     </div>
@@ -7607,6 +7608,18 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
      voltou). Traz de volta como texto compacto e colapsável (não gráfico — essa decisão de tirar
      o gráfico daqui continua valendo), pra não voltar a pesar a tela como o cabeçalho pesava antes. */
   const [mostrarSubtotalCategoria, setMostrarSubtotalCategoria] = useState(false);
+  /* Etapa sobre seções colapsáveis: pedido do usuário, com a ressalva que ele mesmo concordou —
+     sempre começa TUDO expandido (nunca colapsado por padrão), você que escolhe fechar o que
+     quiser. Chave composta ("lista:" / "carrinho:" + id da categoria) porque a mesma categoria
+     pode aparecer nas duas seções ao mesmo tempo, e cada uma deve poder colapsar independente. */
+  const [secoesColapsadas, setSecoesColapsadas] = useState(() => new Set());
+  function toggleSecao(chave) {
+    setSecoesColapsadas((atual) => {
+      const nova = new Set(atual);
+      if (nova.has(chave)) nova.delete(chave); else nova.add(chave);
+      return nova;
+    });
+  }
   const [mostrarLegenda, setMostrarLegenda] = useState(false); // Etapa sobre cabeçalho compacto — legenda vira popover
 
   useEffect(() => {
@@ -7775,30 +7788,46 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
             {!!itensLista.length && (
               <div>
                 <div className="handwrite text-lg font-bold mb-1" style={{ color: "var(--ink-black)" }}>📝 Lista</div>
-                {gruposLista.map((grupo) => (
-                  <div key={grupo.id} className="mb-3">
-                    <div className="text-xs uppercase tracking-wide text-stone-500 font-semibold mb-1">{grupo.icone} {grupo.nome}</div>
-                    {grupo.itens.map((it) => (
-                      <ItemLinha key={it.id} item={it} catalogo={catalogo} mediaRef={mediaRefPara(it)}
-                        onAbrirEditor={abrirEditor} onToggleComprado={toggleComprado} onRemoverConfirmado={pedirRemocao} onAtualizarQuantidade={atualizarQuantidade} />
-                    ))}
-                  </div>
-                ))}
+                {gruposLista.map((grupo) => {
+                  const chave = "lista:" + grupo.id;
+                  const colapsada = secoesColapsadas.has(chave);
+                  return (
+                    <div key={grupo.id} className="mb-3">
+                      <button onClick={() => toggleSecao(chave)} className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500 font-semibold mb-1 tap-target">
+                        <span className="text-stone-400 normal-case">{colapsada ? "▸" : "▾"}</span>
+                        <span>{grupo.icone} {grupo.nome}</span>
+                        {colapsada && <span className="text-stone-400 normal-case">({grupo.itens.length})</span>}
+                      </button>
+                      {!colapsada && grupo.itens.map((it) => (
+                        <ItemLinha key={it.id} item={it} catalogo={catalogo} mediaRef={mediaRefPara(it)}
+                          onAbrirEditor={abrirEditor} onToggleComprado={toggleComprado} onRemoverConfirmado={pedirRemocao} onAtualizarQuantidade={atualizarQuantidade} />
+                      ))}
+                    </div>
+                  );
+                })}
               </div>
             )}
 
             {!!itensCarrinho.length && (
               <div className="mt-2 pt-3" style={{ borderTop: "2px dashed var(--paper-margin)" }}>
                 <div className="handwrite text-lg font-bold mb-1" style={{ color: "var(--ink-blue)" }}>🛒 Carrinho</div>
-                {gruposCarrinho.map((grupo) => (
-                  <div key={grupo.id} className="mb-3">
-                    <div className="text-xs uppercase tracking-wide text-stone-500 font-semibold mb-1">{grupo.icone} {grupo.nome}</div>
-                    {grupo.itens.map((it) => (
-                      <ItemLinha key={it.id} item={it} catalogo={catalogo} mediaRef={mediaRefPara(it)}
-                        onAbrirEditor={abrirEditor} onToggleComprado={toggleComprado} onRemoverConfirmado={pedirRemocao} onAtualizarQuantidade={atualizarQuantidade} />
-                    ))}
-                  </div>
-                ))}
+                {gruposCarrinho.map((grupo) => {
+                  const chave = "carrinho:" + grupo.id;
+                  const colapsada = secoesColapsadas.has(chave);
+                  return (
+                    <div key={grupo.id} className="mb-3">
+                      <button onClick={() => toggleSecao(chave)} className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500 font-semibold mb-1 tap-target">
+                        <span className="text-stone-400 normal-case">{colapsada ? "▸" : "▾"}</span>
+                        <span>{grupo.icone} {grupo.nome}</span>
+                        {colapsada && <span className="text-stone-400 normal-case">({grupo.itens.length})</span>}
+                      </button>
+                      {!colapsada && grupo.itens.map((it) => (
+                        <ItemLinha key={it.id} item={it} catalogo={catalogo} mediaRef={mediaRefPara(it)}
+                          onAbrirEditor={abrirEditor} onToggleComprado={toggleComprado} onRemoverConfirmado={pedirRemocao} onAtualizarQuantidade={atualizarQuantidade} />
+                      ))}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

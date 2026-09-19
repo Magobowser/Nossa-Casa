@@ -7838,13 +7838,13 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
 
             {!!itensLista.length && (
               <div>
-                <div className="handwrite text-lg font-bold mb-1" style={{ color: "var(--ink-black)" }}>📝 Lista</div>
+                <div className="handwrite text-lg font-bold h-7 leading-7 overflow-hidden" style={{ color: "var(--ink-black)" }}>📝 Lista</div>
                 {gruposLista.map((grupo) => {
                   const chave = "lista:" + grupo.id;
                   const colapsada = secoesColapsadas.has(chave);
                   return (
-                    <div key={grupo.id} className="mb-3">
-                      <button onClick={() => toggleSecao(chave)} className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500 font-semibold mb-1 tap-target">
+                    <div key={grupo.id}>
+                      <button onClick={() => toggleSecao(chave)} className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500 font-semibold h-7 leading-7 overflow-hidden w-full">
                         <span className="text-stone-400 normal-case">{colapsada ? "▸" : "▾"}</span>
                         <span>{grupo.icone} {grupo.nome}</span>
                         {colapsada && <span className="text-stone-400 normal-case">({grupo.itens.length})</span>}
@@ -7860,14 +7860,19 @@ function TelaLista({ catalogo, setCatalogo, sessoes, setSessoes, precoIaCache, s
             )}
 
             {!!itensCarrinho.length && (
-              <div className="mt-2 pt-3" style={{ borderTop: "2px dashed var(--paper-margin)" }}>
-                <div className="handwrite text-lg font-bold mb-1" style={{ color: "var(--ink-blue)" }}>🛒 Carrinho</div>
+              <div className="h-7 relative">
+                <div className="absolute inset-x-0 top-1/2 border-t-2 border-dashed" style={{ borderColor: "var(--paper-margin)" }} />
+              </div>
+            )}
+            {!!itensCarrinho.length && (
+              <div>
+                <div className="handwrite text-lg font-bold h-7 leading-7 overflow-hidden" style={{ color: "var(--ink-blue)" }}>🛒 Carrinho</div>
                 {gruposCarrinho.map((grupo) => {
                   const chave = "carrinho:" + grupo.id;
                   const colapsada = secoesColapsadas.has(chave);
                   return (
-                    <div key={grupo.id} className="mb-3">
-                      <button onClick={() => toggleSecao(chave)} className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500 font-semibold mb-1 tap-target">
+                    <div key={grupo.id}>
+                      <button onClick={() => toggleSecao(chave)} className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500 font-semibold h-7 leading-7 overflow-hidden w-full">
                         <span className="text-stone-400 normal-case">{colapsada ? "▸" : "▾"}</span>
                         <span>{grupo.icone} {grupo.nome}</span>
                         {colapsada && <span className="text-stone-400 normal-case">({grupo.itens.length})</span>}
